@@ -1,0 +1,6 @@
+[submodule "data/40kdc-data"]
+	path = data/40kdc-data
+	url = https://github.com/narfman0/40kdc-data.git
+[submodule "data/wh40k-11e"]
+	path = data/wh40k-11e
+	url = https://github.com/BSData/wh40k-11e.git
