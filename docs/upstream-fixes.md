@@ -17,6 +17,10 @@ here is patched in grimtable.
 - **Baffling Data Screed, Data-spike, Data-severed, Searing Conflagaration,
   Emanatus Forcefield (Aura), Vingh's Wafers of Dynamism** have no entries
   for Adeptus Mechanicus; **Turbo Boost** has none for Adeptus Custodes.
+- **Upper points tiers are labelled with the wrong model count** for several
+  units: Kataphron Breachers show tiers at 3 and 4 models (the second is 6),
+  likewise Serberys Raiders, Sulphurhounds, Destroyers, Pteraxii. The cost is
+  right; `points[].models` is not.
 - **Damaged brackets** are named per wound range ("Damaged: 1-4 wounds
   remaining") and have no effect encoding; a `wounds-remaining-at-or-below`
   condition exists and would fit.

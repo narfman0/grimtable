@@ -6,3 +6,4 @@
 .DS_Store
 /client/public/data
 /client/src/wasm
+/grimtable.db*
