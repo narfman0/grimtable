@@ -36,7 +36,8 @@
 - [ ] Stratagems with reactive windows
 - [~] Objective control, sticky objectives and primary scoring with caps — `rules.rs`, `actions.rs::score`; one default mission, no force dispositions
 - [~] Detachment rules and enhancements — enhancements arrive as abilities; detachment rules not yet attached (40kdc keys them by detachment id)
-- [ ] Transports, overwatch, defender wound allocation, Precision, damaged brackets
+- [~] Transports: embark at deployment, disembark in movement, forced disembark from a wreck — test `vanguard_ride_the_dunerider`; no Firing Deck
+- [ ] Overwatch, defender wound allocation, Precision, damaged brackets
 
 ## 4. Client
 
