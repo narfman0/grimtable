@@ -82,8 +82,9 @@ BSData 11e (pinned) ──┘                                   │
 - Thin. Rooms, seats, one WebSocket per player. Calls the engine. Owns dice and
   state so the client cannot cheat.
 - Persistence is the seed plus an append-only action log. Replay rebuilds state.
-  That gives reconnect, undo, spectators and bug reports for free. SQLite first;
-  Postgres and sticky routing by game id only once there is more than one node.
+  That gives reconnect, undo, spectators and bug reports for free. Postgres
+  from the first hosted box (a scale-to-zero machine has no disk worth
+  keeping); sticky routing by game id only once there is more than one node.
 
 ### Client
 

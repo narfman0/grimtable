@@ -1,0 +1,13 @@
+# Only what the Dockerfile copies; the submodules' own clutter stays out too.
+.git
+**/.git
+target
+build
+client/node_modules
+client/dist
+client/public/data
+client/src/wasm
+grimtable.db*
+*.log
+data/40kdc-data/*
+!data/40kdc-data/data

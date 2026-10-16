@@ -12,6 +12,7 @@ pub mod games;
 use axum::http::{header, HeaderValue, Method};
 use axum::routing::{get, post};
 use axum::Router;
+use sqlx::PgPool;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tower_http::cors::CorsLayer;
@@ -23,17 +24,18 @@ use tower_http::trace::TraceLayer;
 pub struct AppState(pub Arc<Inner>);
 
 pub struct Inner {
-    pub db: db::Db,
+    pub db: PgPool,
     pub root: PathBuf,
     pub cache: catalogue::Cache,
     pub rooms: games::Rooms,
+    /// Mark the session cookie `Secure` (the server is behind HTTPS).
+    pub secure_cookies: bool,
 }
 
 impl AppState {
-    pub fn new(db_path: &Path, root: PathBuf) -> anyhow::Result<AppState> {
-        let db = db::Db::open(db_path)?;
+    pub fn new(db: PgPool, root: PathBuf, secure_cookies: bool) -> AppState {
         let cache = catalogue::Cache::new(root.clone());
-        Ok(AppState(Arc::new(Inner { db, root, cache, rooms: games::Rooms::default() })))
+        AppState(Arc::new(Inner { db, root, cache, rooms: games::Rooms::default(), secure_cookies }))
     }
 }
 

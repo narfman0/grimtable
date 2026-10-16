@@ -56,10 +56,10 @@ impl IntoResponse for ApiError {
     }
 }
 
-impl From<rusqlite::Error> for ApiError {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<sqlx::Error> for ApiError {
+    fn from(e: sqlx::Error) -> Self {
         match e {
-            rusqlite::Error::QueryReturnedNoRows => ApiError::not_found("not found"),
+            sqlx::Error::RowNotFound => ApiError::not_found("not found"),
             e => ApiError::internal(format!("database: {e}")),
         }
     }

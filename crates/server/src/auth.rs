@@ -10,7 +10,6 @@ use axum::http::{header, request::Parts, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use rand::RngCore;
-use rusqlite::{params, OptionalExtension};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -44,28 +43,31 @@ impl FromRequestParts<AppState> for AuthUser {
             .map(str::to_string)
             .ok_or_else(|| ApiError::unauthorized("not signed in"))?;
         let days = session_days();
-        let user = state.db.with(|c| {
-            let user = c
-                .query_row(
-                    "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id \
-                     WHERE s.token = ?1 AND (s.expires_at IS NULL OR s.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
-                    params![token],
-                    |r| Ok(AuthUser { id: r.get(0)?, username: r.get(1)? }),
-                )
-                .optional()?;
-            if user.is_some() {
-                // Sliding expiry: renew once the session is into its last day.
-                c.execute(
-                    "UPDATE sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1) \
-                     WHERE token = ?2 AND (expires_at IS NULL OR expires_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?3))",
-                    params![format!("+{days} days"), token, format!("+{} days", days - 1)],
-                )?;
-            } else {
-                c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
-            }
-            Ok(user)
-        })?;
-        user.ok_or_else(|| ApiError::unauthorized("session expired"))
+        let user: Option<(i64, String)> = sqlx::query_as(concat!(
+            "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = $1 AND (s.expires_at IS NULL OR s.expires_at > ",
+            crate::now_sql!(),
+            ")"
+        ))
+        .bind(&token)
+        .fetch_optional(&state.db)
+        .await?;
+        if user.is_some() {
+            // Sliding expiry: renew once the session is into its last day.
+            sqlx::query(concat!(
+                "UPDATE sessions SET expires_at = ",
+                crate::utc_text!("now() + make_interval(days => $1::int)"),
+                " WHERE token = $2 AND (expires_at IS NULL OR expires_at < ",
+                crate::utc_text!("now() + make_interval(days => $1::int - 1)"),
+                ")"
+            ))
+            .bind(days)
+            .bind(&token)
+            .execute(&state.db)
+            .await?;
+        } else {
+            sqlx::query("DELETE FROM sessions WHERE token = $1").bind(&token).execute(&state.db).await?;
+        }
+        user.map(|(id, username)| AuthUser { id, username }).ok_or_else(|| ApiError::unauthorized("session expired"))
     }
 }
 
@@ -85,32 +87,41 @@ fn new_token() -> String {
     hex(&bytes)
 }
 
-fn session_cookie(token: &str) -> HeaderValue {
+/// `; Secure` when the server sits behind HTTPS (`GRIMTABLE_SECURE_COOKIES`),
+/// so the cookie is never sent in the clear. Off for plain-HTTP local runs.
+fn secure_attr(state: &AppState) -> &'static str {
+    if state.secure_cookies {
+        "; Secure"
+    } else {
+        ""
+    }
+}
+
+fn session_cookie(state: &AppState, token: &str) -> HeaderValue {
     let max_age = session_days() * 24 * 60 * 60;
-    HeaderValue::from_str(&format!("{COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}")).expect("cookie")
+    HeaderValue::from_str(&format!("{COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}{}", secure_attr(state))).expect("cookie")
 }
 
-fn clear_cookie() -> HeaderValue {
-    HeaderValue::from_static("grimtable_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0")
+fn clear_cookie(state: &AppState) -> HeaderValue {
+    HeaderValue::from_str(&format!("{COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0{}", secure_attr(state))).expect("cookie")
 }
 
-fn start_session(state: &AppState, user_id: i64) -> ApiResult<String> {
+async fn start_session(state: &AppState, user_id: i64) -> ApiResult<String> {
     let token = new_token();
-    let days = format!("+{} days", session_days());
-    state.db.with(|c| {
-        // Housekeeping: drop sessions that have expired.
-        c.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [])?;
-        c.execute(
-            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?3))",
-            params![token, user_id, days],
-        )
-    })?;
+    // Housekeeping: drop sessions that have expired.
+    sqlx::query(concat!("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= ", crate::now_sql!())).execute(&state.db).await?;
+    sqlx::query(concat!("INSERT INTO sessions (token, user_id, expires_at) VALUES ($1, $2, ", crate::utc_text!("now() + make_interval(days => $3::int)"), ")"))
+        .bind(&token)
+        .bind(user_id)
+        .bind(session_days())
+        .execute(&state.db)
+        .await?;
     Ok(token)
 }
 
-fn signed_in(status: StatusCode, token: &str, id: i64, username: &str) -> Response {
+fn signed_in(state: &AppState, status: StatusCode, token: &str, id: i64, username: &str) -> Response {
     let mut resp = (status, Json(json!({ "id": id, "username": username }))).into_response();
-    resp.headers_mut().insert(header::SET_COOKIE, session_cookie(token));
+    resp.headers_mut().insert(header::SET_COOKIE, session_cookie(state, token));
     resp
 }
 
@@ -126,24 +137,21 @@ pub async fn register(State(state): State<AppState>, Json(body): Json<Credential
     rand::rng().fill_bytes(&mut salt_bytes);
     let salt = SaltString::encode_b64(&salt_bytes).map_err(|e| ApiError::internal(format!("salt: {e}")))?;
     let hash = Argon2::default().hash_password(body.password.as_bytes(), &salt).map_err(|e| ApiError::internal(format!("hashing: {e}")))?.to_string();
-    let inserted = state.db.with(|c| {
-        match c.execute("INSERT INTO users (username, password_hash) VALUES (?1, ?2)", params![username, hash]) {
-            Ok(_) => Ok(Some(c.last_insert_rowid())),
-            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => Ok(None),
-            Err(e) => Err(e),
-        }
-    })?;
-    let id = inserted.ok_or_else(|| ApiError::conflict("username taken"))?;
-    let token = start_session(&state, id)?;
+    let inserted: Result<i64, sqlx::Error> =
+        sqlx::query_scalar("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id").bind(&username).bind(&hash).fetch_one(&state.db).await;
+    let id = match inserted {
+        Ok(id) => id,
+        Err(sqlx::Error::Database(e)) if e.is_unique_violation() => return Err(ApiError::conflict("username taken")),
+        Err(e) => return Err(e.into()),
+    };
+    let token = start_session(&state, id).await?;
     tracing::info!(user = %username, "registered");
-    Ok(signed_in(StatusCode::CREATED, &token, id, &username))
+    Ok(signed_in(&state, StatusCode::CREATED, &token, id, &username))
 }
 
 pub async fn login(State(state): State<AppState>, Json(body): Json<Credentials>) -> ApiResult<Response> {
     let username = body.username.trim().to_string();
-    let row = state.db.with(|c| {
-        c.query_row("SELECT id, password_hash FROM users WHERE username = ?1", params![username], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).optional()
-    })?;
+    let row: Option<(i64, String)> = sqlx::query_as("SELECT id, password_hash FROM users WHERE username = $1").bind(&username).fetch_optional(&state.db).await?;
     let Some((id, hash)) = row else {
         return Err(ApiError::unauthorized("bad username or password"));
     };
@@ -151,8 +159,8 @@ pub async fn login(State(state): State<AppState>, Json(body): Json<Credentials>)
     if Argon2::default().verify_password(body.password.as_bytes(), &parsed).is_err() {
         return Err(ApiError::unauthorized("bad username or password"));
     }
-    let token = start_session(&state, id)?;
-    Ok(signed_in(StatusCode::OK, &token, id, &username))
+    let token = start_session(&state, id).await?;
+    Ok(signed_in(&state, StatusCode::OK, &token, id, &username))
 }
 
 pub async fn logout(State(state): State<AppState>, parts: axum::http::request::Parts) -> ApiResult<Response> {
@@ -167,10 +175,10 @@ pub async fn logout(State(state): State<AppState>, parts: axum::http::request::P
         .next()
         .map(str::to_string);
     if let Some(token) = token {
-        state.db.with(|c| c.execute("DELETE FROM sessions WHERE token = ?1", params![token]))?;
+        sqlx::query("DELETE FROM sessions WHERE token = $1").bind(&token).execute(&state.db).await?;
     }
     let mut resp = StatusCode::NO_CONTENT.into_response();
-    resp.headers_mut().insert(header::SET_COOKIE, clear_cookie());
+    resp.headers_mut().insert(header::SET_COOKIE, clear_cookie(&state));
     Ok(resp)
 }
 

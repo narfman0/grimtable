@@ -23,7 +23,7 @@ what is built and what is next.
 | `crates/content` | Build step: joins the two data submodules into a content pack the engine loads. |
 | `crates/roster` | Parses New Recruit / BattleScribe `.ros` exports; scrubs prose from fixtures. |
 | `crates/wasm` | WebAssembly bindings: the browser runs the same engine. |
-| `crates/server` | Authoritative game server (axum). A health endpoint so far. |
+| `crates/server` | Authoritative game server (axum, Postgres): accounts, armies, lobbies, WebSocket games. |
 | `client/` | Hotseat browser client (TypeScript, Vite, canvas). |
 | `crates/roster/fixtures` | Three real lists, scrubbed to numbers, names and keywords. |
 | `data/40kdc-data` | Submodule: [our fork](https://github.com/narfman0/40kdc-data) of [40kdc-data](https://github.com/Tabletop-Developer-Consortium/40kdc-data), the ability effect DSL and mission data. |
@@ -40,7 +40,8 @@ cargo run -p content -- pack crates/roster/fixtures/mechanicus.ros   # a content
 # the browser client and the server
 ./scripts/sync-data.sh
 wasm-pack build crates/wasm --target web --out-dir ../../client/src/wasm
-cargo run -p server                            # http://127.0.0.1:8080, SQLite in grimtable.db
+podman run -d --name grimtable-pg -e POSTGRES_PASSWORD=postgres -p 127.0.0.1:5432:5432 postgres:18
+DATABASE_URL=postgres://postgres:postgres@127.0.0.1/postgres cargo run -p server   # http://127.0.0.1:8080
 cd client && npm install && npm run dev        # http://localhost:5173, proxies /api to the server
 ```
 
@@ -49,6 +50,10 @@ game and share its join code, or pick an open lobby. Both players attach
 leaders at muster, the engine rolls off for first turn, then deploy and play.
 The log explains every roll in plain words. A local hotseat mode is still
 there for playing on one screen.
+
+Server tests need Postgres too: `GRIMTABLE_TEST_DATABASE_URL=postgres://…
+cargo test -p server` (each test uses a schema of its own). Deploying:
+[docs/deploy.md](docs/deploy.md).
 
 ## Content and licensing
 

@@ -15,8 +15,9 @@ use engine::content::EditionParams;
 use engine::state::Phase;
 use engine::{Action, GameState};
 use rand::Rng as _;
-use rusqlite::{params, Connection, OptionalExtension};
 use serde::Deserialize;
+use sqlx::postgres::PgRow;
+use sqlx::{PgPool, Row as _};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -86,29 +87,34 @@ pub struct GameRow {
     pub created_at: String,
 }
 
-const COLS: &str = "id, join_code, visibility, status, pattern, points_limit, host_id, state_json, winner, created_at";
+/// The columns `row` reads, in order.
+macro_rules! cols {
+    () => {
+        "id, join_code, visibility, status, pattern, points_limit, host_id, state_json, winner, created_at"
+    };
+}
 
-fn row(r: &rusqlite::Row) -> rusqlite::Result<GameRow> {
+fn row(r: PgRow) -> sqlx::Result<GameRow> {
     Ok(GameRow {
-        id: r.get(0)?,
-        join_code: r.get(1)?,
-        visibility: r.get(2)?,
-        status: r.get(3)?,
-        pattern: r.get(4)?,
-        points_limit: r.get::<_, i64>(5)?.max(0) as u32,
-        host_id: r.get(6)?,
-        state_json: r.get(7)?,
-        winner: r.get(8)?,
-        created_at: r.get(9)?,
+        id: r.try_get(0)?,
+        join_code: r.try_get(1)?,
+        visibility: r.try_get(2)?,
+        status: r.try_get(3)?,
+        pattern: r.try_get(4)?,
+        points_limit: r.try_get::<i64, _>(5)?.max(0) as u32,
+        host_id: r.try_get(6)?,
+        state_json: r.try_get(7)?,
+        winner: r.try_get(8)?,
+        created_at: r.try_get(9)?,
     })
 }
 
-fn load(c: &Connection, id: i64) -> rusqlite::Result<Option<GameRow>> {
-    c.query_row(&format!("SELECT {COLS} FROM games WHERE id = ?1"), params![id], row).optional()
+async fn load(db: &PgPool, id: i64) -> sqlx::Result<Option<GameRow>> {
+    sqlx::query(concat!("SELECT ", cols!(), " FROM games WHERE id = $1")).bind(id).try_map(row).fetch_optional(db).await
 }
 
-fn load_or_404(state: &AppState, id: i64) -> ApiResult<GameRow> {
-    state.db.with(|c| load(c, id))?.ok_or_else(|| ApiError::not_found("no such game"))
+async fn load_or_404(state: &AppState, id: i64) -> ApiResult<GameRow> {
+    load(&state.db, id).await?.ok_or_else(|| ApiError::not_found("no such game"))
 }
 
 #[derive(Clone, Debug)]
@@ -121,20 +127,29 @@ struct Seat {
     army_points: u32,
 }
 
-fn seats(c: &Connection, game_id: i64) -> rusqlite::Result<Vec<Seat>> {
-    let mut st = c.prepare(
-        "SELECT p.seat, p.user_id, u.username, p.army_id, a.name, a.points FROM game_players p JOIN users u ON u.id = p.user_id JOIN armies a ON a.id = p.army_id WHERE p.game_id = ?1 ORDER BY p.seat",
-    )?;
-    let rows = st.query_map(params![game_id], |r| {
-        Ok(Seat { seat: r.get::<_, i64>(0)? as usize, user_id: r.get(1)?, username: r.get(2)?, army_id: r.get(3)?, army_name: r.get(4)?, army_points: r.get::<_, i64>(5)?.max(0) as u32 })
-    })?;
-    rows.collect()
+async fn seats(db: &PgPool, game_id: i64) -> sqlx::Result<Vec<Seat>> {
+    sqlx::query(
+        "SELECT p.seat, p.user_id, u.username, p.army_id, a.name, a.points FROM game_players p JOIN users u ON u.id = p.user_id JOIN armies a ON a.id = p.army_id WHERE p.game_id = $1 ORDER BY p.seat",
+    )
+    .bind(game_id)
+    .try_map(|r: PgRow| {
+        Ok(Seat {
+            seat: r.try_get::<i64, _>(0)? as usize,
+            user_id: r.try_get(1)?,
+            username: r.try_get(2)?,
+            army_id: r.try_get(3)?,
+            army_name: r.try_get(4)?,
+            army_points: r.try_get::<i64, _>(5)?.max(0) as u32,
+        })
+    })
+    .fetch_all(db)
+    .await
 }
 
 /// The game as `GET /api/games/:id` shows it to `viewer`. The join code is
 /// only shown to the players; for everyone else it is null.
-fn view_in(c: &Connection, game: &GameRow, viewer: Option<i64>) -> rusqlite::Result<Value> {
-    let seats = seats(c, game.id)?;
+async fn view_in(db: &PgPool, game: &GameRow, viewer: Option<i64>) -> sqlx::Result<Value> {
+    let seats = seats(db, game.id).await?;
     let my_seat = viewer.and_then(|v| seats.iter().find(|s| s.user_id == v).map(|s| s.seat));
     let host = seats.iter().find(|s| s.user_id == game.host_id).map(|s| s.username.clone());
     Ok(json!({
@@ -152,13 +167,13 @@ fn view_in(c: &Connection, game: &GameRow, viewer: Option<i64>) -> rusqlite::Res
     }))
 }
 
-fn view(state: &AppState, id: i64, viewer: Option<i64>) -> ApiResult<Value> {
-    let game = load_or_404(state, id)?;
-    state.db.with(|c| view_in(c, &game, viewer))
+async fn view(state: &AppState, id: i64, viewer: Option<i64>) -> ApiResult<Value> {
+    let game = load_or_404(state, id).await?;
+    Ok(view_in(&state.db, &game, viewer).await?)
 }
 
-fn seat_of(state: &AppState, game_id: i64, user_id: i64) -> ApiResult<Option<usize>> {
-    state.db.with(|c| seats(c, game_id)).map(|s| s.iter().find(|s| s.user_id == user_id).map(|s| s.seat))
+async fn seat_of(state: &AppState, game_id: i64, user_id: i64) -> ApiResult<Option<usize>> {
+    Ok(seats(&state.db, game_id).await?.iter().find(|s| s.user_id == user_id).map(|s| s.seat))
 }
 
 // ---------------------------------------------------------------------------
@@ -193,8 +208,8 @@ pub struct CreateBody {
 }
 
 /// An army the user owns, for taking a seat with.
-fn own_army(state: &AppState, user: &AuthUser, army_id: i64) -> ApiResult<armies::ArmyRow> {
-    let army = state.db.with(|c| armies::load(c, army_id))?.ok_or_else(|| ApiError::bad_request("no such army"))?;
+async fn own_army(state: &AppState, user: &AuthUser, army_id: i64) -> ApiResult<armies::ArmyRow> {
+    let army = armies::load(&state.db, army_id).await?.ok_or_else(|| ApiError::bad_request("no such army"))?;
     if army.user_id != user.id {
         return Err(ApiError::bad_request("no such army"));
     }
@@ -209,85 +224,87 @@ pub async fn create(State(state): State<AppState>, user: AuthUser, Json(body): J
         return Err(ApiError::bad_request("points_limit must be positive"));
     }
     content::mission::default_mission(&state.root, &body.pattern).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
-    let army = own_army(&state, &user, body.army_id)?;
-    let id = state.db.with(|c| {
-        let tx = c.transaction()?;
-        let code = loop {
-            let code = new_code();
-            let taken: i64 = tx.query_row("SELECT count(*) FROM games WHERE join_code = ?1", params![code], |r| r.get(0))?;
-            if taken == 0 {
-                break code;
-            }
-        };
-        tx.execute(
-            "INSERT INTO games (join_code, visibility, status, pattern, points_limit, host_id) VALUES (?1, ?2, 'waiting', ?3, ?4, ?5)",
-            params![code, body.visibility, body.pattern, body.points_limit, user.id],
-        )?;
-        let id = tx.last_insert_rowid();
-        tx.execute("INSERT INTO game_players (game_id, seat, user_id, army_id) VALUES (?1, 0, ?2, ?3)", params![id, user.id, army.id])?;
-        tx.commit()?;
-        Ok(id)
-    })?;
+    let army = own_army(&state, &user, body.army_id).await?;
+    let mut tx = state.db.begin().await?;
+    // A clash with an existing code is a unique violation that would abort
+    // the transaction, so skip codes in use and insert only a free one.
+    let id: i64 = loop {
+        let code = new_code();
+        let inserted: Option<i64> = sqlx::query_scalar(
+            "INSERT INTO games (join_code, visibility, status, pattern, points_limit, host_id) VALUES ($1, $2, 'waiting', $3, $4, $5) ON CONFLICT (join_code) DO NOTHING RETURNING id",
+        )
+        .bind(&code)
+        .bind(&body.visibility)
+        .bind(&body.pattern)
+        .bind(body.points_limit as i64)
+        .bind(user.id)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(id) = inserted {
+            break id;
+        }
+    };
+    sqlx::query("INSERT INTO game_players (game_id, seat, user_id, army_id) VALUES ($1, 0, $2, $3)").bind(id).bind(user.id).bind(army.id).execute(&mut *tx).await?;
+    tx.commit().await?;
     tracing::info!(game = id, host = %user.username, "game created");
-    Ok((StatusCode::CREATED, Json(view(&state, id, Some(user.id))?)))
+    Ok((StatusCode::CREATED, Json(view(&state, id, Some(user.id)).await?)))
 }
 
 pub async fn open(State(state): State<AppState>, _user: AuthUser) -> ApiResult<Json<Value>> {
-    let list = state.db.with(|c| {
-        let mut st = c.prepare(
-            "SELECT g.id, u.username, g.pattern, g.points_limit, g.created_at FROM games g JOIN users u ON u.id = g.host_id \
-             WHERE g.visibility = 'open' AND g.status = 'waiting' AND NOT EXISTS (SELECT 1 FROM game_players p WHERE p.game_id = g.id AND p.seat = 1) \
-             ORDER BY g.created_at DESC, g.id DESC",
-        )?;
-        let rows = st.query_map([], |r| {
-            Ok(json!({ "id": r.get::<_, i64>(0)?, "host": r.get::<_, String>(1)?, "pattern": r.get::<_, String>(2)?, "points_limit": r.get::<_, i64>(3)?, "created_at": r.get::<_, String>(4)? }))
-        })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-    })?;
+    let list = sqlx::query(
+        "SELECT g.id, u.username, g.pattern, g.points_limit, g.created_at FROM games g JOIN users u ON u.id = g.host_id \
+         WHERE g.visibility = 'open' AND g.status = 'waiting' AND NOT EXISTS (SELECT 1 FROM game_players p WHERE p.game_id = g.id AND p.seat = 1) \
+         ORDER BY g.created_at DESC, g.id DESC",
+    )
+    .try_map(|r: PgRow| {
+        Ok(json!({ "id": r.try_get::<i64, _>(0)?, "host": r.try_get::<String, _>(1)?, "pattern": r.try_get::<String, _>(2)?, "points_limit": r.try_get::<i64, _>(3)?, "created_at": r.try_get::<String, _>(4)? }))
+    })
+    .fetch_all(&state.db)
+    .await?;
     Ok(Json(Value::Array(list)))
 }
 
 pub async fn mine(State(state): State<AppState>, user: AuthUser) -> ApiResult<Json<Value>> {
-    let ids = state.db.with(|c| {
-        let mut st = c.prepare("SELECT g.id FROM games g JOIN game_players p ON p.game_id = g.id WHERE p.user_id = ?1 ORDER BY g.updated_at DESC, g.id DESC")?;
-        let rows = st.query_map(params![user.id], |r| r.get::<_, i64>(0))?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()
-    })?;
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT g.id FROM games g JOIN game_players p ON p.game_id = g.id WHERE p.user_id = $1 ORDER BY g.updated_at DESC, g.id DESC")
+        .bind(user.id)
+        .fetch_all(&state.db)
+        .await?;
     let mut out = Vec::with_capacity(ids.len());
     for id in ids {
-        out.push(view(&state, id, Some(user.id))?);
+        out.push(view(&state, id, Some(user.id)).await?);
     }
     Ok(Json(Value::Array(out)))
 }
 
 pub async fn get_one(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    Ok(Json(view(&state, id, Some(user.id))?))
+    Ok(Json(view(&state, id, Some(user.id)).await?))
 }
 
 /// Take seat 1 of a waiting game.
-fn take_seat(state: &AppState, user: &AuthUser, game: &GameRow, army_id: i64) -> ApiResult<Value> {
+async fn take_seat(state: &AppState, user: &AuthUser, game: &GameRow, army_id: i64) -> ApiResult<Value> {
     if game.status != "waiting" {
         return Err(ApiError::conflict("game has already started"));
     }
     if game.host_id == user.id {
         return Err(ApiError::conflict("you host this game"));
     }
-    let army = own_army(state, user, army_id)?;
-    let taken = state.db.with(|c| {
-        let full: i64 = c.query_row("SELECT count(*) FROM game_players WHERE game_id = ?1 AND seat = 1", params![game.id], |r| r.get(0))?;
-        if full > 0 {
-            return Ok(false);
-        }
-        c.execute("INSERT INTO game_players (game_id, seat, user_id, army_id) VALUES (?1, 1, ?2, ?3)", params![game.id, user.id, army.id])?;
-        c.execute("UPDATE games SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1", params![game.id])?;
-        Ok(true)
-    })?;
+    let army = own_army(state, user, army_id).await?;
+    // The (game_id, seat) key settles two joins racing for the seat.
+    let taken = sqlx::query("INSERT INTO game_players (game_id, seat, user_id, army_id) VALUES ($1, 1, $2, $3) ON CONFLICT DO NOTHING")
+        .bind(game.id)
+        .bind(user.id)
+        .bind(army.id)
+        .execute(&state.db)
+        .await?
+        .rows_affected()
+        > 0;
     if !taken {
         return Err(ApiError::conflict("game is full"));
     }
+    sqlx::query(concat!("UPDATE games SET updated_at = ", crate::now_sql!(), " WHERE id = $1")).bind(game.id).execute(&state.db).await?;
     tracing::info!(game = game.id, user = %user.username, "joined");
     let _ = state.rooms.get(game.id).tx.send(Event::Lobby);
-    view(state, game.id, Some(user.id))
+    view(state, game.id, Some(user.id)).await
 }
 
 #[derive(Deserialize)]
@@ -298,11 +315,13 @@ pub struct JoinByCode {
 
 pub async fn join_by_code(State(state): State<AppState>, user: AuthUser, Json(body): Json<JoinByCode>) -> ApiResult<Json<Value>> {
     let code = body.join_code.trim().to_ascii_uppercase();
-    let game = state
-        .db
-        .with(|c| c.query_row(&format!("SELECT {COLS} FROM games WHERE join_code = ?1"), params![code], row).optional())?
+    let game = sqlx::query(concat!("SELECT ", cols!(), " FROM games WHERE join_code = $1"))
+        .bind(&code)
+        .try_map(row)
+        .fetch_optional(&state.db)
+        .await?
         .ok_or_else(|| ApiError::not_found("no game with that code"))?;
-    Ok(Json(take_seat(&state, &user, &game, body.army_id)?))
+    Ok(Json(take_seat(&state, &user, &game, body.army_id).await?))
 }
 
 #[derive(Deserialize)]
@@ -311,11 +330,11 @@ pub struct JoinById {
 }
 
 pub async fn join_by_id(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>, Json(body): Json<JoinById>) -> ApiResult<Json<Value>> {
-    let game = load_or_404(&state, id)?;
+    let game = load_or_404(&state, id).await?;
     if game.visibility != "open" {
         return Err(ApiError::forbidden("this game needs a join code"));
     }
-    Ok(Json(take_seat(&state, &user, &game, body.army_id)?))
+    Ok(Json(take_seat(&state, &user, &game, body.army_id).await?))
 }
 
 /// Problems that stop a lobby from starting: over the points limit, or no
@@ -323,31 +342,30 @@ pub async fn join_by_id(State(state): State<AppState>, user: AuthUser, Path(id):
 /// Leave a game. Waiting: the joiner frees seat 1; the host cancels the
 /// game. Playing: the leaver concedes and the opponent wins.
 pub async fn leave(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    let game = load_or_404(&state, id)?;
-    let Some(seat) = seat_of(&state, id, user.id)? else {
+    let game = load_or_404(&state, id).await?;
+    let Some(seat) = seat_of(&state, id, user.id).await? else {
         return Err(ApiError::forbidden("you are not seated in this game"));
     };
     match game.status.as_str() {
         "waiting" => {
             let cancelled = seat == 0;
-            state.db.with(|c| {
-                if cancelled {
-                    c.execute("UPDATE games SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1", params![id])?;
-                    c.execute("DELETE FROM game_players WHERE game_id = ?1", params![id])?;
-                } else {
-                    c.execute("DELETE FROM game_players WHERE game_id = ?1 AND seat = ?2", params![id, seat as i64])?;
-                    c.execute("UPDATE games SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1", params![id])?;
-                }
-                Ok(())
-            })?;
+            let mut tx = state.db.begin().await?;
+            if cancelled {
+                sqlx::query(concat!("UPDATE games SET status = 'cancelled', updated_at = ", crate::now_sql!(), " WHERE id = $1")).bind(id).execute(&mut *tx).await?;
+                sqlx::query("DELETE FROM game_players WHERE game_id = $1").bind(id).execute(&mut *tx).await?;
+            } else {
+                sqlx::query("DELETE FROM game_players WHERE game_id = $1 AND seat = $2").bind(id).bind(seat as i64).execute(&mut *tx).await?;
+                sqlx::query(concat!("UPDATE games SET updated_at = ", crate::now_sql!(), " WHERE id = $1")).bind(id).execute(&mut *tx).await?;
+            }
+            tx.commit().await?;
             tracing::info!(game = id, user = %user.username, cancelled, "left the lobby");
             let _ = state.rooms.get(id).tx.send(Event::Lobby);
-            view(&state, id, Some(user.id)).map(Json)
+            view(&state, id, Some(user.id)).await.map(Json)
         }
         "playing" => {
             let room = state.rooms.get(id);
             concede(&state, &room, id, seat, &user.username).await?;
-            view(&state, id, Some(user.id)).map(Json)
+            view(&state, id, Some(user.id)).await.map(Json)
         }
         other => Err(ApiError::conflict(&format!("the game is {other}"))),
     }
@@ -357,7 +375,7 @@ pub async fn leave(State(state): State<AppState>, user: AuthUser, Path(id): Path
 async fn concede(state: &AppState, room: &Room, game_id: i64, seat: usize, username: &str) -> ApiResult<()> {
     let mut cached = room.state.lock().await;
     if cached.is_none() {
-        let game = load_or_404(state, game_id)?;
+        let game = load_or_404(state, game_id).await?;
         let text = game.state_json.ok_or_else(|| ApiError::conflict("the game has not started"))?;
         *cached = Some(serde_json::from_str(&text).map_err(|e| ApiError::internal(format!("stored game state: {e}")))?);
     }
@@ -368,12 +386,12 @@ async fn concede(state: &AppState, room: &Room, game_id: i64, seat: usize, usern
     let winner_name = gs.players[winner].name.clone();
     gs.log(Some(seat), format!("{username} conceded: {winner_name} wins"));
     let text = serde_json::to_string(&*gs)?;
-    state.db.with(|c| {
-        c.execute(
-            "UPDATE games SET state_json = ?1, status = 'finished', winner = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?3",
-            params![text, winner as i64, game_id],
-        )
-    })?;
+    sqlx::query(concat!("UPDATE games SET state_json = $1, status = 'finished', winner = $2, updated_at = ", crate::now_sql!(), " WHERE id = $3"))
+        .bind(&text)
+        .bind(winner as i64)
+        .bind(game_id)
+        .execute(&state.db)
+        .await?;
     tracing::info!(game = game_id, user = %username, winner, "conceded");
     let frame = Arc::new(StateFrame { to_act: to_act(gs), json: text });
     let _ = room.tx.send(Event::State(frame));
@@ -385,21 +403,21 @@ fn blocks_start(problem: &str) -> bool {
 }
 
 pub async fn start(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    let game = load_or_404(&state, id)?;
+    let game = load_or_404(&state, id).await?;
     if game.host_id != user.id {
         return Err(ApiError::forbidden("only the host can start the game"));
     }
     if game.status != "waiting" {
         return Err(ApiError::conflict("game has already started"));
     }
-    let seats = state.db.with(|c| seats(c, id))?;
+    let seats = seats(&state.db, id).await?;
     if seats.len() != 2 {
         return Err(ApiError::conflict("waiting for a second player"));
     }
     let mut packs = Vec::with_capacity(2);
     let mut problems: Vec<Vec<String>> = Vec::with_capacity(2);
     for s in &seats {
-        let army = state.db.with(|c| armies::load(c, s.army_id))?.ok_or_else(|| ApiError::conflict(format!("{}'s army no longer exists", s.username)))?;
+        let army = armies::load(&state.db, s.army_id).await?.ok_or_else(|| ApiError::conflict(format!("{}'s army no longer exists", s.username)))?;
         let built = armies::build(&state, &army, game.points_limit).await?;
         packs.push(built.pack);
         problems.push(built.problems);
@@ -417,17 +435,17 @@ pub async fn start(State(state): State<AppState>, user: AuthUser, Path(id): Path
     let room = state.rooms.get(id);
     {
         let mut cached = room.state.lock().await;
-        state.db.with(|c| {
-            c.execute(
-                "UPDATE games SET status = 'playing', seed = ?1, state_json = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?3",
-                params![seed as i64, json_text, id],
-            )
-        })?;
+        sqlx::query(concat!("UPDATE games SET status = 'playing', seed = $1, state_json = $2, updated_at = ", crate::now_sql!(), " WHERE id = $3"))
+            .bind(seed as i64)
+            .bind(&json_text)
+            .bind(id)
+            .execute(&state.db)
+            .await?;
         *cached = Some(gs);
     }
     tracing::info!(game = id, seed, "game started");
     let _ = room.tx.send(Event::State(frame));
-    let mut v = view(&state, id, Some(user.id))?;
+    let mut v = view(&state, id, Some(user.id)).await?;
     v["problems"] = json!(problems);
     Ok(Json(v))
 }
@@ -456,7 +474,7 @@ fn error_text(message: &str) -> String {
 async fn load_room_state(state: &AppState, room: &Room, game_id: i64) -> ApiResult<Option<StateFrame>> {
     let mut cached = room.state.lock().await;
     if cached.is_none() {
-        let game = load_or_404(state, game_id)?;
+        let game = load_or_404(state, game_id).await?;
         let Some(text) = game.state_json else { return Ok(None) };
         let gs: GameState = serde_json::from_str(&text).map_err(|e| ApiError::internal(format!("stored game state: {e}")))?;
         let frame = StateFrame { to_act: to_act(&gs), json: text };
@@ -475,7 +493,7 @@ async fn apply_action(state: &AppState, room: &Room, game_id: i64, seat: Option<
     let action_json = serde_json::to_string(&action).map_err(|e| e.to_string())?;
     let mut cached = room.state.lock().await;
     if cached.is_none() {
-        let game = state.db.with(|c| load(c, game_id)).map_err(|e| e.message)?.ok_or("no such game")?;
+        let game = load(&state.db, game_id).await.map_err(|e| ApiError::from(e).message)?.ok_or("no such game")?;
         let text = game.state_json.ok_or("the game has not started")?;
         *cached = Some(serde_json::from_str(&text).map_err(|e| format!("stored game state: {e}"))?);
     }
@@ -485,24 +503,10 @@ async fn apply_action(state: &AppState, room: &Room, game_id: i64, seat: Option<
     let text = serde_json::to_string(&next).map_err(|e| e.to_string())?;
     let finished = next.phase == Phase::Ended;
     let winner = next.winner.flatten().map(|w| w as i64);
-    state
-        .db
-        .with(|c| {
-            let tx = c.transaction()?;
-            tx.execute(
-                "UPDATE games SET state_json = ?1, status = CASE WHEN ?2 THEN 'finished' ELSE status END, winner = ?3, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?4",
-                params![text, finished, winner, game_id],
-            )?;
-            tx.execute(
-                "INSERT INTO game_actions (game_id, seq, seat, action_json) VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM game_actions WHERE game_id = ?1), ?2, ?3)",
-                params![game_id, seat as i64, action_json],
-            )?;
-            tx.commit()
-        })
-        .map_err(|e| {
-            tracing::error!(game = game_id, "persisting action: {}", e.message);
-            "could not save the action".to_string()
-        })?;
+    persist_action(&state.db, game_id, seat, &text, finished, winner, &action_json).await.map_err(|e| {
+        tracing::error!(game = game_id, "persisting action: {e}");
+        "could not save the action".to_string()
+    })?;
     let frame = Arc::new(StateFrame { to_act: to_act(&next), json: text });
     *current = next;
     if finished {
@@ -512,9 +516,28 @@ async fn apply_action(state: &AppState, room: &Room, game_id: i64, seat: Option<
     Ok(())
 }
 
+/// The new state and the action that made it, in one transaction.
+async fn persist_action(db: &PgPool, game_id: i64, seat: usize, state_json: &str, finished: bool, winner: Option<i64>, action_json: &str) -> sqlx::Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query(concat!("UPDATE games SET state_json = $1, status = CASE WHEN $2 THEN 'finished' ELSE status END, winner = $3, updated_at = ", crate::now_sql!(), " WHERE id = $4"))
+        .bind(state_json)
+        .bind(finished)
+        .bind(winner)
+        .bind(game_id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO game_actions (game_id, seq, seat, action_json) VALUES ($1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM game_actions WHERE game_id = $1), $2, $3)")
+        .bind(game_id)
+        .bind(seat as i64)
+        .bind(action_json)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
+}
+
 pub async fn ws(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>, upgrade: WebSocketUpgrade) -> ApiResult<Response> {
-    load_or_404(&state, id)?;
-    let seat = seat_of(&state, id, user.id)?;
+    load_or_404(&state, id).await?;
+    let seat = seat_of(&state, id, user.id).await?;
     Ok(upgrade.on_upgrade(move |socket| handle_socket(socket, state, id, user, seat)))
 }
 
@@ -523,7 +546,7 @@ async fn send(socket: &mut WebSocket, text: String) -> bool {
 }
 
 async fn lobby_text(state: &AppState, game_id: i64, viewer: i64) -> Option<String> {
-    view(state, game_id, Some(viewer)).ok().map(|g| json!({ "type": "lobby", "game": g }).to_string())
+    view(state, game_id, Some(viewer)).await.ok().map(|g| json!({ "type": "lobby", "game": g }).to_string())
 }
 
 async fn handle_socket(mut socket: WebSocket, state: AppState, game_id: i64, user: AuthUser, seat: Option<usize>) {

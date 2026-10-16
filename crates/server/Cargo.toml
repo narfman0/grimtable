@@ -14,16 +14,18 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 axum = { version = "0.8", features = ["ws", "macros"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "sync", "time", "signal"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["fs", "cors", "trace"] }
-rusqlite = { version = "0.37", features = ["bundled"] }
 argon2 = "0.5"
 rand = "0.9"
 futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "macros"] }
 
 [dev-dependencies]
 tokio-tungstenite = "0.27"
 http-body-util = "0.1"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
+tokio = { version = "1", features = ["rt"] }

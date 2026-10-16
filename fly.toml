@@ -1,0 +1,39 @@
+# Fly.io config for the dev box: `fly deploy` from a checkout with the
+# submodules initialised. DATABASE_URL is a secret (Neon, database
+# `grimtable_dev`); see docs/deploy.md.
+app = "grimtable-dev"
+primary_region = "iad"
+kill_signal = "SIGINT"
+kill_timeout = 10
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  GRIMTABLE_ADDR = "0.0.0.0:8080"
+  GRIMTABLE_SECURE_COOKIES = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Scale to nothing when idle; the first request starts a machine.
+  # Rooms live in memory, but every game is in Postgres and reloads on
+  # the next connection, so a stop loses nothing.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 200
+    hard_limit = 250
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  timeout = "5s"
+  method = "GET"
+  path = "/health"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

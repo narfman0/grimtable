@@ -1,5 +1,9 @@
 //! Two players through the whole contract: accounts, armies (imported and
 //! editor-built), a lobby, the start, and the WebSocket protocol.
+//!
+//! Needs Postgres: `GRIMTABLE_TEST_DATABASE_URL=postgres://…`. Each test
+//! works in a schema of its own and drops it afterwards. Without the
+//! variable the tests say so and pass, unless `CI` is set.
 
 use axum::body::Body;
 use axum::http::{header, Method, Request, StatusCode};
@@ -9,7 +13,10 @@ use content::catalogue::Catalogue;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
+use sqlx::postgres::PgConnectOptions;
+use sqlx::PgPool;
 use std::net::SocketAddr;
+use std::str::FromStr;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -28,20 +35,40 @@ fn root() -> PathBuf {
 struct TestServer {
     app: Router,
     addr: SocketAddr,
-    db_path: PathBuf,
+    db: PgPool,
+    url: String,
+    schema: String,
+}
+
+/// The test database, or `None` (with a note) when there is none to use.
+fn test_db_url() -> Option<String> {
+    match std::env::var("GRIMTABLE_TEST_DATABASE_URL") {
+        Ok(url) => Some(url),
+        Err(_) if std::env::var_os("CI").is_some() => panic!("GRIMTABLE_TEST_DATABASE_URL must be set in CI"),
+        Err(_) => {
+            eprintln!("skipped: set GRIMTABLE_TEST_DATABASE_URL to a Postgres database to run the server tests");
+            None
+        }
+    }
 }
 
 impl TestServer {
-    async fn start(tag: &str) -> TestServer {
+    async fn start(tag: &str) -> Option<TestServer> {
+        let url = test_db_url()?;
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let db_path = std::env::temp_dir().join(format!("grimtable-test-{tag}-{}-{nanos}.db", std::process::id()));
-        let state = server::AppState::new(&db_path, root()).unwrap();
+        let schema = format!("test_{tag}_{}_{nanos}", std::process::id());
+        let admin = PgPool::connect(&url).await.expect("test database");
+        sqlx::raw_sql(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}"))).execute(&admin).await.unwrap();
+        admin.close().await;
+        let opts = PgConnectOptions::from_str(&url).unwrap().options([("search_path", schema.as_str())]);
+        let db = server::db::connect_with(opts).await.unwrap();
+        let state = server::AppState::new(db.clone(), root(), false);
         let app = server::router(state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let serve_app = app.clone();
         tokio::spawn(async move { axum::serve(listener, serve_app).await.unwrap() });
-        TestServer { app, addr, db_path }
+        Some(TestServer { app, addr, db, url, schema })
     }
 
     fn client(&self) -> Client {
@@ -55,17 +82,25 @@ impl TestServer {
         ws
     }
 
-    fn actions_logged(&self, game: i64) -> i64 {
-        let conn = rusqlite::Connection::open(&self.db_path).unwrap();
-        conn.query_row("SELECT count(*) FROM game_actions WHERE game_id = ?1", [game], |r| r.get(0)).unwrap()
+    async fn actions_logged(&self, game: i64) -> i64 {
+        sqlx::query_scalar("SELECT count(*) FROM game_actions WHERE game_id = $1").bind(game).fetch_one(&self.db).await.unwrap()
     }
 }
 
 impl Drop for TestServer {
+    /// Drop the test's schema. The test's runtime is finishing, so this
+    /// runs on a runtime of its own.
     fn drop(&mut self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", self.db_path.display()));
-        }
+        let (url, schema) = (self.url.clone(), self.schema.clone());
+        let _ = std::thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+                if let Ok(admin) = PgPool::connect(&url).await {
+                    let _ = sqlx::raw_sql(sqlx::AssertSqlSafe(format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))).execute(&admin).await;
+                    admin.close().await;
+                }
+            })
+        })
+        .join();
     }
 }
 
@@ -148,7 +183,7 @@ fn editor_army(cat: &Catalogue) -> ArmyDef {
 
 #[tokio::test]
 async fn two_players_play_over_websockets() {
-    let server = TestServer::start("play").await;
+    let Some(server) = TestServer::start("play").await else { return };
     let mut alice = server.client();
     let mut bob = server.client();
 
@@ -257,7 +292,7 @@ async fn two_players_play_over_websockets() {
     let refused = recv(&mut ws_b).await;
     assert_eq!(refused["type"], "error");
     assert_eq!(refused["message"], "not your turn");
-    assert_eq!(server.actions_logged(game_id), 0);
+    assert_eq!(server.actions_logged(game_id).await, 0);
 
     // Alice finishes mustering: everyone sees seat 0 marked done.
     send(&mut ws_a, json!({ "type": "action", "action": { "type": "finish_muster" } })).await;
@@ -267,7 +302,7 @@ async fn two_players_play_over_websockets() {
         assert_eq!(frame["state"]["phase"], "Muster");
         assert_eq!(frame["state"]["fight_queue"], json!([0]), "muster-done list");
     }
-    assert_eq!(server.actions_logged(game_id), 1);
+    assert_eq!(server.actions_logged(game_id).await, 1);
     // Bob too: the engine rolls off and deployment begins for the winner.
     send(&mut ws_b, json!({ "type": "action", "action": { "type": "finish_muster" } })).await;
     for ws in [&mut ws_a, &mut ws_b, &mut ws_c] {
@@ -277,7 +312,7 @@ async fn two_players_play_over_websockets() {
         assert!(frame["state"]["log"].as_array().unwrap().iter().any(|e| e["text"].as_str().unwrap().starts_with("Roll-off")), "{}", frame["state"]["log"]);
         assert_eq!(frame["to_act"], frame["state"]["first_player"]);
     }
-    assert_eq!(server.actions_logged(game_id), 2);
+    assert_eq!(server.actions_logged(game_id).await, 2);
     let (_, shown) = alice.get(&format!("/api/games/{game_id}")).await;
     assert_eq!(shown["status"], "playing");
     assert_eq!(alice.call(Method::DELETE, &format!("/api/armies/{}", mech["id"]), None).await.0, StatusCode::CONFLICT, "army in a live game");
@@ -285,7 +320,7 @@ async fn two_players_play_over_websockets() {
 
 #[tokio::test]
 async fn open_lobby_broadcasts_and_refuses_an_illegal_army() {
-    let server = TestServer::start("lobby").await;
+    let Some(server) = TestServer::start("lobby").await else { return };
     let mut alice = server.client();
     let mut bob = server.client();
     alice.register("alice").await;
@@ -324,7 +359,7 @@ async fn open_lobby_broadcasts_and_refuses_an_illegal_army() {
 
 #[tokio::test]
 async fn leaving_frees_a_seat_cancels_a_lobby_and_concedes_a_game() {
-    let server = TestServer::start("leave").await;
+    let Some(server) = TestServer::start("leave").await else { return };
     let mut alice = server.client();
     let mut bob = server.client();
     alice.register("alice").await;
@@ -380,23 +415,29 @@ async fn leaving_frees_a_seat_cancels_a_lobby_and_concedes_a_game() {
 
 #[tokio::test]
 async fn sessions_expire() {
-    let server = TestServer::start("expiry").await;
+    let Some(server) = TestServer::start("expiry").await else { return };
     let mut alice = server.client();
     alice.register("alice").await;
     let (status, _) = alice.get("/api/me").await;
     assert_eq!(status, StatusCode::OK);
     let cookie = alice.cookie.clone().unwrap();
     let token = cookie.split(';').next().unwrap().trim().trim_start_matches("grimtable_session=").to_string();
-    {
-        let conn = rusqlite::Connection::open(&server.db_path).unwrap();
-        let expires: Option<String> = conn.query_row("SELECT expires_at FROM sessions WHERE token = ?1", [&token], |r| r.get(0)).unwrap();
-        assert!(expires.is_some(), "new sessions carry an expiry");
-        conn.execute("UPDATE sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE token = ?1", [&token]).unwrap();
-    }
+    let expires: Option<String> = sqlx::query_scalar("SELECT expires_at FROM sessions WHERE token = $1").bind(&token).fetch_one(&server.db).await.unwrap();
+    let expires = expires.expect("new sessions carry an expiry");
+    assert!(expires.len() == 20 && expires.ends_with('Z') && expires.as_str() > "2026-", "{expires}");
+    // Into its last day: the next request renews it.
+    sqlx::query(concat!("UPDATE sessions SET expires_at = ", server::utc_text!("now() + interval '1 hour'"), " WHERE token = $1")).bind(&token).execute(&server.db).await.unwrap();
+    assert_eq!(alice.get("/api/me").await.0, StatusCode::OK);
+    let renewed: bool = sqlx::query_scalar(concat!("SELECT expires_at > ", server::utc_text!("now() + interval '29 days'"), " FROM sessions WHERE token = $1"))
+        .bind(&token)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert!(renewed, "a session in its last day is renewed on use");
+    sqlx::query("UPDATE sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE token = $1").bind(&token).execute(&server.db).await.unwrap();
     let (status, body) = alice.get("/api/me").await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
     assert_eq!(body["error"], "session expired");
-    let conn = rusqlite::Connection::open(&server.db_path).unwrap();
-    let left: i64 = conn.query_row("SELECT count(*) FROM sessions WHERE token = ?1", [&token], |r| r.get(0)).unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT count(*) FROM sessions WHERE token = $1").bind(&token).fetch_one(&server.db).await.unwrap();
     assert_eq!(left, 0, "expired sessions are deleted on use");
 }
