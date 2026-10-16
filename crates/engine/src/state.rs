@@ -85,6 +85,12 @@ pub struct Unit {
     pub merged_into: Option<UnitId>,
     /// Units this unit has declared a charge against this turn.
     pub charge_targets: Vec<UnitId>,
+    /// The transport this unit is embarked in, if any.
+    #[serde(default)]
+    pub embarked_in: Option<UnitId>,
+    /// Set for the turn after a disembark from a transport that had moved.
+    #[serde(default)]
+    pub disembarked_after_move: bool,
 }
 
 impl Unit {
@@ -101,7 +107,7 @@ impl Unit {
     }
 
     pub fn on_board(&self) -> bool {
-        !self.is_destroyed() && !self.in_reserve && self.deployed
+        !self.is_destroyed() && !self.in_reserve && self.deployed && self.embarked_in.is_none()
     }
 
     pub fn below_half_strength(&self) -> bool {
@@ -282,5 +288,7 @@ fn instantiate(id: UnitId, owner: PlayerId, spec: UnitSpec) -> Unit {
         attached_leaders: Vec::new(),
         merged_into: None,
         charge_targets: Vec::new(),
+        embarked_in: None,
+        disembarked_after_move: false,
     }
 }

@@ -31,6 +31,10 @@ pub enum Action {
     Fight { unit: UnitId, target: UnitId, pile_in: Option<Vec<Vec2>>, consolidate: Option<Vec<Vec2>> },
     /// Pick an option for an army-wide stance or a choice an ability offers.
     SelectStance { name: String, option: usize },
+    /// Deployment: put an undeployed unit inside a transport.
+    Embark { unit: UnitId, transport: UnitId },
+    /// Movement phase: set up an embarked unit within 3" of its transport.
+    Disembark { unit: UnitId, positions: Vec<Vec2> },
     EndPhase,
 }
 
@@ -78,6 +82,8 @@ pub fn apply(state: &mut GameState, player: PlayerId, action: Action) -> RuleRes
         Action::DeclareCharge { unit, targets } => crate::combat::declare_charge(state, player, unit, targets),
         Action::ChargeMove { unit, positions } => crate::combat::charge_move(state, player, unit, positions),
         Action::Fight { unit, target, pile_in, consolidate } => crate::combat::fight(state, player, unit, target, pile_in, consolidate),
+        Action::Embark { unit, transport } => embark(state, player, unit, transport),
+        Action::Disembark { unit, positions } => disembark(state, player, unit, positions),
         Action::SelectStance { name, option } => {
             state.players[player].stances.insert(name.clone(), option);
             state.log(Some(player), format!("{} chose option {} for {name}", state.players[player].name, option + 1));
@@ -391,6 +397,120 @@ fn scout_move(state: &mut GameState, player: PlayerId, unit: UnitId, positions: 
     Ok(())
 }
 
+// ------------------------------------------------------------ transports
+
+fn embark(state: &mut GameState, player: PlayerId, unit: UnitId, transport: UnitId) -> RuleResult {
+    if state.phase != Phase::Deployment {
+        return err("units embark during deployment");
+    }
+    let (u, t) = match (state.unit(unit), state.unit(transport)) {
+        (Some(u), Some(t)) => (u, t),
+        _ => return err("no such unit"),
+    };
+    if u.owner != player || t.owner != player {
+        return err("not your units");
+    }
+    if u.deployed || u.merged_into.is_some() {
+        return err("that unit is already deployed");
+    }
+    let Some(capacity) = t.spec.transport_capacity else {
+        return err(format!("{} is not a transport", t.spec.name));
+    };
+    if !u.has_keyword("Infantry") {
+        return err("only Infantry can embark");
+    }
+    let aboard: u32 = state.units.iter().filter(|x| x.embarked_in == Some(transport)).map(|x| x.model_count()).sum();
+    if aboard + u.model_count() > capacity {
+        return err(format!("{} can carry {capacity} models", t.spec.name));
+    }
+    let (uname, tname) = (u.spec.name.clone(), t.spec.name.clone());
+    let u = &mut state.units[unit];
+    u.embarked_in = Some(transport);
+    u.deployed = true;
+    state.log(Some(player), format!("{uname} embarked in {tname}"));
+    next_deployer(state);
+    Ok(())
+}
+
+fn disembark(state: &mut GameState, player: PlayerId, unit: UnitId, positions: Vec<Vec2>) -> RuleResult {
+    if state.phase != Phase::Movement {
+        return err("units disembark in the movement phase");
+    }
+    let u = state.unit(unit).ok_or(RuleError("no such unit".into()))?;
+    if u.owner != player {
+        return err("not your unit");
+    }
+    let Some(tid) = u.embarked_in else { return err("that unit is not embarked") };
+    let t = &state.units[tid];
+    if !t.on_board() {
+        return err("the transport is not on the battlefield");
+    }
+    if matches!(t.flags.moved, Some(MoveKind::Advance) | Some(MoveKind::FallBack)) {
+        return err("cannot disembark from a transport that advanced or fell back");
+    }
+    let transport_moved = matches!(t.flags.moved, Some(MoveKind::Normal));
+    let hull: Vec<(Vec2, f32)> = t.alive_models().filter_map(|m| m.pos.map(|p| (p, m.radius()))).collect();
+    // Temporarily mark the unit as on the board so position checks see it.
+    state.units[unit].embarked_in = None;
+    let placed = match validate_positions(state, unit, &positions) {
+        Ok(p) => p,
+        Err(e) => {
+            state.units[unit].embarked_in = Some(tid);
+            return Err(e);
+        }
+    };
+    let near = placed.iter().all(|&(p, r)| hull.iter().any(|&(h, hr)| crate::geom::base_distance(p, r, h, hr) <= 3.0));
+    if !near || min_distance_to_enemies(state, player, &placed) <= state.params.engagement_range {
+        state.units[unit].embarked_in = Some(tid);
+        return err("disembarking models must be set up within 3\" of the transport and outside engagement range");
+    }
+    set_positions(state, unit, &placed);
+    let u = &mut state.units[unit];
+    u.disembarked_after_move = transport_moved;
+    // A unit that leaves a stationary transport may still move this phase.
+    u.flags.moved = if transport_moved { Some(MoveKind::Normal) } else { None };
+    let name = u.spec.name.clone();
+    let tname = state.units[tid].spec.name.clone();
+    state.log(Some(player), format!("{name} disembarked from {tname}{}", if transport_moved { " after it moved; it cannot charge this turn" } else { "" }));
+    Ok(())
+}
+
+/// A destroyed transport spills its passengers next to the wreck; each model
+/// risks a hazard roll.
+pub(crate) fn emergency_disembark(state: &mut GameState, transport: UnitId) {
+    let passengers: Vec<UnitId> = state.units.iter().filter(|u| u.embarked_in == Some(transport)).map(|u| u.id).collect();
+    if passengers.is_empty() {
+        return;
+    }
+    let centre = state.units[transport].models.iter().find_map(|m| m.pos).unwrap_or_default();
+    let fail_on = state.params.desperate_escape_fail_on;
+    for (k, pid) in passengers.into_iter().enumerate() {
+        let n = state.units[pid].model_count() as usize;
+        let mut lost = 0;
+        for _ in 0..n {
+            if state.rng.d6() <= fail_on {
+                lost += 1;
+            }
+        }
+        let u = &mut state.units[pid];
+        u.embarked_in = None;
+        let r = u.models.iter().map(|m| m.radius()).fold(0.0, f32::max);
+        let step = 2.0 * r + 0.3;
+        let mut i = 0;
+        for m in u.models.iter_mut().filter(|m| m.alive()) {
+            let angle = i as f32 * 0.9 + k as f32;
+            let ring = 3.5 + step * (i / 7) as f32;
+            m.pos = Some(Vec2::new((centre.x + ring * angle.cos()).clamp(1.0, 59.0), (centre.y + ring * angle.sin()).clamp(1.0, 43.0)));
+            i += 1;
+        }
+        for m in u.models.iter_mut().filter(|m| m.alive()).take(lost) {
+            m.wounds = 0;
+        }
+        let name = u.spec.name.clone();
+        state.log(None, format!("{name} forced to disembark from the wreck, losing {lost} models"));
+    }
+}
+
 // -------------------------------------------------------------- movement
 
 fn check_move_distance(state: &GameState, unit: UnitId, placed: &[(Vec2, f32)], max: f32) -> RuleResult {
@@ -583,6 +703,7 @@ fn start_turn(state: &mut GameState) {
         let shot = u.flags.shot;
         u.flags = TurnFlags { shot_last_turn: shot, ..Default::default() };
         u.charge_targets.clear();
+        u.disembarked_after_move = false;
     }
     update_objective_control(state);
     battle_shock(state);

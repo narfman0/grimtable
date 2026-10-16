@@ -101,6 +101,7 @@ fn check_destroyed(state: &mut GameState, target: UnitId) {
         (t.spec.name.clone(), t.owner, demise)
     };
     state.log(None, format!("{name} destroyed"));
+    crate::actions::emergency_disembark(state, target);
     if let Some(d) = demise {
         let roll = state.rng.d6();
         if roll == 6 {
@@ -336,6 +337,9 @@ pub fn declare_charge(state: &mut GameState, player: PlayerId, unit: UnitId, tar
     }
     if matches!(u.flags.moved, Some(MoveKind::Advance) | Some(MoveKind::FallBack)) {
         return err("a unit that advanced or fell back cannot charge");
+    }
+    if u.disembarked_after_move {
+        return err("a unit that disembarked from a moving transport cannot charge");
     }
     if rules::enemies_in_engagement_range(state, unit).next().is_some() {
         return err("a unit in engagement range cannot charge");

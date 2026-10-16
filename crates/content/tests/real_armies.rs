@@ -291,3 +291,45 @@ fn detachment_rules_ride_on_the_pack() {
     let b = engine::rules::unit_buffs(&s, guard, None, Some(engine::effects::AttackType::Melee));
     assert!(b.choices_pending.iter().any(|(n, _)| n == "Martial Mastery"), "{:?}", b.choices_pending);
 }
+
+#[test]
+fn vanguard_ride_the_dunerider() {
+    let mut s = fresh("mechanicus", "necrons");
+    ok(&mut s, 0, Action::FinishMuster);
+    ok(&mut s, 1, Action::FinishMuster);
+    s.first_player = 0;
+    s.active = 0;
+    let vanguard = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Skitarii Vanguard").unwrap().id;
+    let dunerider = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Skorpius Dunerider").unwrap().id;
+    let cawl = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Belisarius Cawl").unwrap().id;
+    assert!(apply(&mut s, 0, Action::Embark { unit: vanguard, transport: cawl }).is_err(), "Cawl is not a transport");
+    ok(&mut s, 0, Action::Embark { unit: vanguard, transport: dunerider });
+    assert!(!s.units[vanguard].on_board());
+    // Necrons deploy something, then the Dunerider goes down.
+    let p = s.active;
+    let warriors = s.units.iter().find(|u| u.owner == 1 && u.spec.name == "Necron Warriors").unwrap().id;
+    let n = s.units[warriors].model_count() as usize;
+    let wr = s.units[warriors].models[0].radius();
+    ok(&mut s, p, Action::Deploy { unit: warriors, positions: grid(5.0, 36.0, n, wr) });
+    ok(&mut s, 0, Action::Deploy { unit: dunerider, positions: vec![Vec2::new(30.0, 6.0)] });
+    // Jump to the movement phase of player 0.
+    s.phase = Phase::Movement;
+    s.round = 1;
+    s.active = 0;
+    for u in s.units.iter_mut() {
+        if !u.deployed && u.merged_into.is_none() {
+            u.deployed = true;
+            u.in_reserve = true;
+        }
+    }
+    let r = s.units[vanguard].models[0].radius();
+    assert!(apply(&mut s, 0, Action::Disembark { unit: vanguard, positions: grid(45.0, 6.0, 10, r) }).is_err(), "too far from the transport");
+    // Transport moves first, then the squad hops out: no charge this turn.
+    ok(&mut s, 0, Action::Move { unit: dunerider, kind: MoveKind::Normal, positions: vec![Vec2::new(30.0, 14.0)] });
+    ok(&mut s, 0, Action::Disembark { unit: vanguard, positions: grid(27.5, 16.6, 10, r) });
+    assert!(s.units[vanguard].on_board());
+    assert!(s.units[vanguard].disembarked_after_move);
+    s.phase = Phase::Charge;
+    let e = apply(&mut s, 0, Action::DeclareCharge { unit: vanguard, targets: vec![warriors] }).unwrap_err();
+    assert!(e.0.contains("disembarked") || e.0.contains("away"), "{e}");
+}
