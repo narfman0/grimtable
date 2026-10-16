@@ -28,3 +28,6 @@ jobs:
         working-directory: client
       - run: npm run smoke
         working-directory: client
+      - run: for f in adeptus-mechanicus adeptus-custodes necrons; do mkdir -p client/public/data/catalogue && cargo run -q -p content -- catalogue $f > client/public/data/catalogue/$f.json; done
+      - run: npm run e2e
+        working-directory: client

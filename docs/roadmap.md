@@ -54,8 +54,9 @@
 
 - [x] Faction catalogue for the editor: datasheets, points by size with BSData overlay, model rows and loadout variants, wargear options, weapons, enhancements, detachments with detachment points, leader eligibility — `crates/content/src/catalogue.rs`, test `catalogue_has_the_mechanicus_essentials`
 - [x] Editor army definition, validation and pack building — `crates/content/src/army_def.rs`, test `an_editor_army_validates_and_plays`
-- [ ] Server: accounts, armies, lobbies with join codes, WebSocket games
-- [ ] Client: login, armies and editor, lobby, networked battle
+- [x] Server: accounts, armies, lobbies with join codes, WebSocket games — `crates/server`, tests in `crates/server/tests/multiplayer.rs`
+- [x] Client: login, armies and editor, lobby, networked battle — `client/src/{login,home,editor,game,api,session}.ts`; `npm run e2e` passes against the real server
+- [ ] Leave-lobby endpoint, session expiry, reconnection UX, spectator list
 
 ## Deferred
 

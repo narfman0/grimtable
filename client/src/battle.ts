@@ -28,8 +28,6 @@ interface UiState {
   fightUnit: number | null;
   fight: { target: number | null; pileIn: Vec2[] | null; consolidate: Vec2[] | null };
   showDice: boolean;
-  handoff: boolean;
-  lastActor: number | null;
 }
 
 const PHASE_LABEL: Record<Phase, string> = {
@@ -57,8 +55,6 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     fightUnit: null,
     fight: { target: null, pileIn: null, consolidate: null },
     showDice: false,
-    handoff: false,
-    lastActor: null,
   };
 
   const canvas = h('canvas');
@@ -123,7 +119,18 @@ export function renderBattle(app: App, session: Session): HTMLElement {
   // ------------------------------------------------------------ helpers
 
   const s = () => session.state;
-  const game = session.game;
+  // Online, the mirror is replaced on every state message: never cache it.
+  const game = () => session.game;
+  const online = session.online;
+
+  session.onChange = () => {
+    if (!root.isConnected) return;
+    // A fresh state invalidates any placement or target picks in progress,
+    // unless the pending charge move is ours and still pending.
+    if (ui.placement && ui.placement.kind !== 'charge') ui.placement = null;
+    if (!s().pending && ui.placement?.kind === 'charge') ui.placement = null;
+    render();
+  };
 
   function unit(id: number | null): Unit | null {
     return id === null ? null : (s().units[id] ?? null);
@@ -144,18 +151,23 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     if (ui.placement && ui.placement.kind !== 'charge' && ui.placement.unitId !== id) ui.placement = null;
   }
 
-  function act(player: number, action: Record<string, unknown>): boolean {
-    const ok = session.apply(player, action);
-    if (ok) {
-      ui.placement = null;
-      ui.chargeTargets.clear();
-      ui.fight = { target: null, pileIn: null, consolidate: null };
-      ui.shoot.clear();
-      ui.shootUnit = null;
-      ui.fightUnit = null;
+  function act(player: number, action: Record<string, unknown>): void {
+    if (!session.canAct(player)) {
+      toast(session.seat === null ? 'you are spectating' : 'not your seat');
+      return;
     }
-    render();
-    return ok;
+    void session.apply(player, action).then((ok) => {
+      if (!root.isConnected) return;
+      if (ok) {
+        ui.placement = null;
+        ui.chargeTargets.clear();
+        ui.fight = { target: null, pileIn: null, consolidate: null };
+        ui.shoot.clear();
+        ui.shootUnit = null;
+        ui.fightUnit = null;
+      }
+      render();
+    });
   }
 
   function enemiesOf(player: number): Unit[] {
@@ -179,7 +191,7 @@ export function renderBattle(app: App, session: Session): HTMLElement {
   }
 
   function moveLimit(u: Unit): number {
-    const b = unitBuffs(game, u.id);
+    const b = unitBuffs(game(), u.id);
     const statM = b.stat_add.filter(([k]) => k === 'M').reduce((n, [, v]) => n + v, 0);
     return Math.max(0, u.spec.stats.movement + b.move_add + statM);
   }
@@ -263,11 +275,15 @@ export function renderBattle(app: App, session: Session): HTMLElement {
 
   // ------------------------------------------------------------ render
 
+  /** Whose panel this is: the local seat online, whoever acts in hotseat. */
+  function viewer(): number {
+    return session.seat ?? session.playerToAct();
+  }
+
   function render(): void {
     const st = s();
     const actor = session.playerToAct();
-    if (st.pending && !ui.placement) openChargePlacement();
-    if (!ui.handoff) ui.lastActor = actor;
+    if (st.pending && !ui.placement && session.canAct(actor)) openChargePlacement();
 
     board.setState(st);
     board.setOverlay({
@@ -285,31 +301,6 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     renderHeader(actor);
     renderPanelBody(actor);
     renderLog();
-
-    const old = root.querySelector('.overlay');
-    old?.remove();
-    if (ui.handoff && ui.lastActor !== null && ui.lastActor !== actor && st.phase !== 'Ended') {
-      root.appendChild(
-        h(
-          'div',
-          { class: 'overlay' },
-          h(
-            'div',
-            { class: 'box' },
-            h('div', { class: 'muted' }, 'Pass the device to'),
-            h('div', { class: `who p${actor}` }, st.players[actor].name),
-            button(
-              'Continue',
-              () => {
-                ui.lastActor = actor;
-                render();
-              },
-              { class: 'primary' },
-            ),
-          ),
-        ),
-      );
-    }
   }
 
   function overlayTargets(): number[] {
@@ -343,18 +334,31 @@ export function renderBattle(app: App, session: Session): HTMLElement {
           { class: 'row' },
           button('Fit', () => board.fit(), { class: 'small', title: 'Fit the board to the window' }),
           button(
-            'New game',
+            online ? 'Leave' : 'New game',
             () => {
+              if (online) {
+                app.leaveGame(session);
+                return;
+              }
               if (confirm('Leave this battle? The saved game will be discarded.')) {
                 clearSave();
-                app.showSetup();
+                app.leaveGame(session);
               }
             },
             { class: 'small' },
           ),
         ),
       ),
-      h('div', { class: `toact p${actor}` }, st.phase === 'Ended' ? 'Final result' : `${p[actor].name} to act`),
+      h('div', { class: `toact p${actor}` }, st.phase === 'Ended' ? 'Final result' : online && session.seat === actor ? 'You to act' : `${p[actor].name} to act`),
+      online
+        ? h(
+            'div',
+            { class: 'row small muted' },
+            session.seat === null ? h('span', { class: 'badge warn' }, 'spectating') : h('span', null, 'you: ', h('b', { class: `p${session.seat}` }, p[session.seat].name)),
+            session.opponentName || session.seat !== null ? h('span', null, 'opponent: ', h('b', { class: `p${1 - (session.seat ?? 0)}` }, session.opponentName ?? p[1 - (session.seat ?? 0)].name)) : null,
+            h('span', { class: `badge ${session.connection === 'open' ? 'ok' : 'warn'}` }, session.connection === 'open' ? 'connected' : session.connection === 'connecting' ? 'reconnecting…' : 'disconnected'),
+          )
+        : null,
       st.phase === 'Fight' && actor !== st.active ? h('div', { class: 'muted small' }, `${p[st.active].name}'s turn; ${p[actor].name} picks the next unit to fight`) : null,
       h(
         'div',
@@ -371,19 +375,6 @@ export function renderBattle(app: App, session: Session): HTMLElement {
       h(
         'div',
         { class: 'row small', style: 'margin-top:6px' },
-        h(
-          'label',
-          null,
-          h('input', {
-            type: 'checkbox',
-            checked: ui.handoff,
-            onChange: (e: Event) => {
-              ui.handoff = (e.target as HTMLInputElement).checked;
-              ui.lastActor = actor;
-            },
-          }),
-          ' pass-device screen',
-        ),
         h(
           'label',
           null,
@@ -406,13 +397,22 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     const st = s();
     const parts: (HTMLElement | null)[] = [];
     if (st.phase === 'Ended') parts.push(renderEnded());
-    if (ui.placement) parts.push(renderPlacement());
+    else if (!session.canAct(actor)) {
+      parts.push(
+        h(
+          'div',
+          { class: 'actions waiting' },
+          h('div', { class: 'title' }, PHASE_LABEL[st.phase]),
+          h('div', { class: 'hint' }, session.seat === null ? `${st.players[actor].name} is acting.` : `Waiting for ${session.opponentName ?? st.players[actor].name}. You can inspect units meanwhile.`),
+        ),
+      );
+    } else if (ui.placement) parts.push(renderPlacement());
     else {
       parts.push(renderPhaseActions(actor));
       parts.push(renderEndPhase(actor));
     }
-    parts.push(renderArmyBox(actor));
-    parts.push(renderUnitList(actor));
+    parts.push(renderArmyBox(viewer()));
+    parts.push(renderUnitList(viewer()));
     parts.push(renderUnitPanel());
     scroll.replaceChildren(...parts.filter((p): p is HTMLElement => p !== null));
   }
@@ -628,7 +628,7 @@ export function renderBattle(app: App, session: Session): HTMLElement {
       return h('div', { class: 'actions' }, rows);
     }
     if (u.in_reserve) {
-      const b = unitBuffs(game, u.id);
+      const b = unitBuffs(game(), u.id);
       if (st.round < st.params.reserves_from_round) rows.push(h('div', { class: 'hint' }, `Reserves can arrive from battle round ${st.params.reserves_from_round}.`));
       else
         rows.push(
@@ -700,7 +700,7 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     for (const m of alive) for (const w of m.weapons) carried.set(w, (carried.get(w) ?? 0) + 1);
     const ranged = [...carried.keys()].filter((w) => u.spec.weapons[w].kind === 'Ranged').sort((a, b) => a - b);
     if (ranged.length === 0) return h('div', { class: 'actions' }, rows, h('div', { class: 'hint' }, `${u.spec.name} has no ranged weapons.`));
-    const visible = visibleEnemies(game, u.id).map((id) => st.units[id]);
+    const visible = visibleEnemies(game(), u.id).map((id) => st.units[id]);
     const engaged = engagedWith(u);
     const targetOptions = [{ value: '', label: '— no target —' }, ...visible.map((e) => ({ value: String(e.id), label: `${e.spec.name} (${fmt(unitDistance(u, e))}")` }))];
     const hints: string[] = [];
@@ -939,13 +939,13 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     const own = st.units.filter((u) => u.owner === actor && u.merged_into === null && aliveModels(u).length > 0);
     const pending = new Map<string, string[]>();
     for (const u of own) {
-      for (const [name, opts] of unitBuffs(game, u.id).choices_pending) if (!pending.has(name)) pending.set(name, opts);
+      for (const [name, opts] of unitBuffs(game(), u.id).choices_pending) if (!pending.has(name)) pending.set(name, opts);
       if (pending.size >= 4) break;
     }
     for (const [name] of pending) if (name in p.stances) pending.delete(name);
     const chosen = Object.entries(p.stances);
     if (p.rules.length === 0 && pending.size === 0 && chosen.length === 0) return null;
-    const canChoose = actor === st.active && st.phase !== 'Ended';
+    const canChoose = actor === st.active && st.phase !== 'Ended' && session.canAct(actor);
     const choiceRows: HTMLElement[] = [];
     const renderChoice = (name: string, opts: string[], current: number | null) =>
       h(
@@ -973,7 +973,7 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     for (const [name, idx] of chosen) {
       let opts: string[] | null = null;
       for (const u of own) {
-        const found = unitBuffs(game, u.id).choices_pending.find(([n]) => n === name);
+        const found = unitBuffs(game(), u.id).choices_pending.find(([n]) => n === name);
         if (found) {
           opts = found[1];
           break;
@@ -1086,7 +1086,7 @@ export function renderBattle(app: App, session: Session): HTMLElement {
     let buffs: Buffs | null = null;
     if (alive.length && u.merged_into === null) {
       try {
-        buffs = unitBuffs(game, u.id);
+        buffs = unitBuffs(game(), u.id);
       } catch {
         buffs = null;
       }

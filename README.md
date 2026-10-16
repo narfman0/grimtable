@@ -4,8 +4,9 @@ A rules-enforcing engine and web client for playing the 11th edition of a certai
 grimdark tabletop wargame. Rust engine, Rust server, TypeScript client. The engine
 compiles to WebAssembly so the browser runs the same rules the server enforces.
 
-**Status:** playable MVP. Two 2,000-point lists exported from New Recruit play
-a full five-round battle in the browser, hotseat, with the engine enforcing
+**Status:** playable online. Sign in, build an army in the editor or import a
+New Recruit export, open a lobby or join one by code, and play a full
+five-round battle against another player, with the engine enforcing
 deployment, movement, shooting, charges, fights, battle-shock, objectives and
 scoring. Abilities the engine cannot apply yet are listed per unit so the
 players apply them by hand. See [docs/design.md](docs/design.md) for the
@@ -36,15 +37,18 @@ cargo test --workspace
 cargo run -p content -- report                 # points disagreements between the data sources
 cargo run -p content -- pack crates/roster/fixtures/mechanicus.ros   # a content pack as JSON
 
-# the browser client
+# the browser client and the server
 ./scripts/sync-data.sh
 wasm-pack build crates/wasm --target web --out-dir ../../client/src/wasm
-cd client && npm install && npm run dev        # http://localhost:5173
+cargo run -p server                            # http://127.0.0.1:8080, SQLite in grimtable.db
+cd client && npm install && npm run dev        # http://localhost:5173, proxies /api to the server
 ```
 
-Pick two lists on the setup screen (the fixtures, or upload your own `.ros`
-export), attach leaders at muster, deploy, and play. The log explains every
-roll in plain words.
+Register, build an army in the editor (or import a `.ros` export), create a
+game and share its join code, or pick an open lobby. Both players attach
+leaders at muster, the engine rolls off for first turn, then deploy and play.
+The log explains every roll in plain words. A local hotseat mode is still
+there for playing on one screen.
 
 ## Content and licensing
 

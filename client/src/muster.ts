@@ -19,15 +19,37 @@ export function eligibleBodyguards(units: Unit[], leader: Unit): Unit[] {
 export function renderMuster(app: App, session: Session): HTMLElement {
   const root = h('div', { class: 'muster' });
 
+  session.onChange = () => {
+    if (!root.isConnected) return;
+    render();
+  };
+
   function render(): void {
     const s = session.state;
     if (s.phase !== 'Muster') {
-      app.startGame(session.game);
+      app.showSession(session);
       return;
     }
+    const online = session.online;
     root.replaceChildren(
-      h('h1', null, 'Muster'),
-      h('p', { class: 'muted' }, 'Attach Leaders and Support units to the units they can lead. Each player marks done when finished; the engine then rolls off for who deploys first.'),
+      h(
+        'div',
+        { class: 'row', style: 'justify-content:space-between' },
+        h('h1', null, 'Muster'),
+        h(
+          'div',
+          { class: 'row' },
+          online ? h('span', { class: `badge ${session.connection === 'open' ? 'ok' : 'warn'}` }, session.connection) : null,
+          button(online ? 'Back to home' : 'New game', () => app.leaveGame(session), { class: 'small' }),
+        ),
+      ),
+      h(
+        'p',
+        { class: 'muted' },
+        online
+          ? 'Attach your Leaders and Support units to the units they can lead, then mark done. When both players are done the engine rolls off for who deploys first.'
+          : 'Attach Leaders and Support units to the units they can lead. Each player marks done when finished; the engine then rolls off for who deploys first.',
+      ),
       h(
         'div',
         { class: 'armies' },
@@ -40,6 +62,7 @@ export function renderMuster(app: App, session: Session): HTMLElement {
     const s = session.state;
     const player = s.players[p];
     const done = s.fight_queue.includes(p);
+    const mine = session.canAct(p);
     const units = s.units.filter((u) => u.owner === p && u.merged_into === null);
     const choices = new Map<number, number>();
     const items = units.map((u) => {
@@ -48,7 +71,7 @@ export function renderMuster(app: App, session: Session): HTMLElement {
         isLeaderUnit(u) ? h('span', { class: 'badge' }, hasRule(u, 'Leader') ? 'Leader' : 'Support') : null,
       ];
       let attach: HTMLElement | null = null;
-      if (isLeaderUnit(u) && !done) {
+      if (isLeaderUnit(u) && !done && mine) {
         const bodyguards = eligibleBodyguards(s.units, u);
         if (bodyguards.length) {
           choices.set(u.id, bodyguards[0].id);
@@ -63,7 +86,9 @@ export function renderMuster(app: App, session: Session): HTMLElement {
             button(
               'Attach',
               () => {
-                if (session.apply(p, { type: 'attach', leader: u.id, bodyguard: choices.get(u.id) })) render();
+                void session.apply(p, { type: 'attach', leader: u.id, bodyguard: choices.get(u.id) }).then((ok) => {
+                  if (ok) render();
+                });
               },
               { class: 'small' },
             ),
@@ -74,25 +99,26 @@ export function renderMuster(app: App, session: Session): HTMLElement {
       }
       return h('li', null, h('div', null, u.spec.name, ' ', h('span', { class: 'muted small' }, `${u.models.length} models · ${u.spec.points} pts`), badges), attach);
     });
+    let footer: HTMLElement;
+    if (done) footer = h('span', { class: 'badge ok' }, 'done, waiting for the other player');
+    else if (mine)
+      footer = button(
+        `${player.name} done`,
+        () => {
+          void session.apply(p, { type: 'finish_muster' }).then((ok) => {
+            if (ok) render();
+          });
+        },
+        { class: 'primary' },
+      );
+    else footer = h('span', { class: 'badge' }, session.online ? 'still mustering' : 'waiting');
     return h(
       'div',
       { class: 'card' },
-      h('h2', { class: `p${p}` }, player.name),
+      h('h2', { class: `p${p}` }, player.name, session.online ? h('span', { class: 'badge' }, mine ? 'you' : session.seat === null ? 'player' : 'opponent') : null),
       h('p', { class: 'muted' }, `${player.faction}${player.detachment ? ' · ' + player.detachment : ''}`),
       h('ul', null, items),
-      h(
-        'div',
-        { style: 'margin-top:12px' },
-        done
-          ? h('span', { class: 'badge ok' }, 'done, waiting for the other player')
-          : button(
-              `${player.name} done`,
-              () => {
-                if (session.apply(p, { type: 'finish_muster' })) render();
-              },
-              { class: 'primary' },
-            ),
-      ),
+      h('div', { style: 'margin-top:12px' }, footer),
     );
   }
 

@@ -11,7 +11,7 @@ const FIXTURES: { value: string; label: string }[] = [
   { value: 'upload', label: 'Upload a .ros file…' },
 ];
 
-const MISSIONS: { value: string; label: string }[] = [
+export const MISSIONS: { value: string; label: string }[] = [
   { value: 'dawn-of-war', label: 'Dawn of War' },
   { value: 'hammer-and-anvil', label: 'Hammer and Anvil' },
   { value: 'tipping-point', label: 'Tipping Point' },
@@ -97,7 +97,7 @@ export function renderSetup(app: App): HTMLElement {
   return h(
     'div',
     { class: 'setup' },
-    h('h1', null, 'grimtable'),
+    h('div', { class: 'row', style: 'justify-content:space-between' }, h('h1', null, 'grimtable · hotseat'), button(app.user ? 'Back to home' : 'Sign in to play online', () => app.navigate(app.user ? '#/' : '#/login'), { class: 'small' })),
     h('p', { class: 'muted' }, 'Hotseat, rules-enforced battle. Both players share this browser and take turns.'),
     resume,
     h('div', { class: 'slots' }, slotEls),

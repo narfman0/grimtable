@@ -7,10 +7,15 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "mock": "node scripts/mock-server.mjs",
+    "e2e": "node scripts/e2e.mjs",
+    "ui-smoke": "node scripts/ui-smoke.mjs"
   },
   "devDependencies": {
+    "jsdom": "^30.1.3",
     "typescript": "^5.6.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "ws": "^8.22.0"
   }
 }
