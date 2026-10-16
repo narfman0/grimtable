@@ -21,7 +21,14 @@ pub fn unit_buffs_at(state: &GameState, unit: &Unit, target: Option<&Unit>, atta
             CoreRule::LoneOperative => buffs.lone_operative = true,
             CoreRule::DeepStrike => buffs.deep_strike = true,
             CoreRule::FightsFirst => buffs.fights_first = true,
-            CoreRule::Other(name) => buffs.unsupported.push(name.clone()),
+            // Printed rule names the army rules already cover, or that are
+            // structural (Leader, Support), are not left to the players.
+            CoreRule::Other(name) => {
+                let covered = state.players[unit.owner].rules.iter().any(|r| r.name.eq_ignore_ascii_case(name));
+                if !covered {
+                    buffs.unsupported.push(name.clone());
+                }
+            }
             _ => {}
         }
     }
@@ -59,6 +66,17 @@ pub fn unit_buffs_at(state: &GameState, unit: &Unit, target: Option<&Unit>, atta
             None => buffs.unsupported.push(rule.name.clone()),
         }
     }
+    buffs.unsupported.retain(|n| !matches!(n.as_str(), "Leader" | "Support"));
+    let mut seen: Vec<String> = Vec::new();
+    buffs.unsupported.retain(|n| {
+        let key = n.to_ascii_lowercase();
+        if seen.contains(&key) {
+            false
+        } else {
+            seen.push(key);
+            true
+        }
+    });
     buffs
 }
 

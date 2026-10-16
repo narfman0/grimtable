@@ -110,6 +110,41 @@ publicly for years. No official wording, no artwork, no trademarks in the projec
 name. A public hosted service, or charging money, raises the risk and is a
 separate decision.
 
+## MVP scope and simplifications
+
+What the first playable version enforces, and where it knowingly cuts a
+corner. Each corner is a candidate for the roadmap, not a design decision.
+
+Enforced: army construction (points limit, detachment, Warlord candidate,
+Epic Hero and datasheet duplicates), leader and support attachment at
+muster, roll-off, alternating deployment inside zones, Infiltrators, Scouts,
+reserves and Deep Strike arrival limits, every move type with coherency and
+engagement checks, Desperate Escape, the full attack sequence with all
+universal weapon abilities, range, line of sight, the hidden rule, Lone
+Operative, cover, Hazardous, Deadly Demise, charges with 2D6 rolls and the
+must-reach-every-target rule, fight ordering (chargers first, then
+alternation), pile in and consolidate limits, battle-shock, objective
+control including sticky objectives, primary scoring with caps, army-wide
+stances (Doctrina Imperatives, Ka'tah stance, Martial Mastery) and recovery
+pools (Reanimation Protocols). Abilities the DSL interpreter cannot apply are
+reported per unit so the players apply them by hand; nothing is silently
+dropped.
+
+Simplified, for now:
+
+- Movement distance is straight-line per model; terrain is passable area
+  terrain that blocks line of sight through it.
+- Wound allocation is automatic: wounded models first, then the closest to
+  the attacker. Leaders are not allocated to while bodyguards live.
+  Precision is declared but inert.
+- No transports (units deploy on foot), no overwatch, no stratagems yet.
+- Damaged brackets, auras affecting other units, once-per-battle abilities
+  and most "when destroyed" effects are left to the players.
+- Hull-based vehicles use a 90mm round stand-in for geometry.
+- The default mission is a Take-and-Hold mirror on a 40kdc deployment
+  pattern with a hand-authored symmetric ruins layout; force dispositions
+  and the 25-cell matchup matrix are not wired in.
+
 ## Rejected alternatives
 
 - **Depend on `wh40kdc` as a crate and overlay our fixes locally.** Rejected:
