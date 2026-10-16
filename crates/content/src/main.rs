@@ -7,7 +7,7 @@
 //!            two sources for the configured factions.
 
 use anyhow::{bail, Context, Result};
-use content::{enrich, mission, pack};
+use content::{catalogue, enrich, mission, pack};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -36,13 +36,22 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&pack)?);
             Ok(())
         }
+        Some("catalogue") => {
+            let root = repo_root()?;
+            let slug = args.get(1).context("usage: content catalogue <faction-slug>")?;
+            let bs = catalogue::bsdata_file(slug).and_then(|f| catalogue::bsdata_points(&root, f).ok());
+            let cat = catalogue::build(&root, slug, bs.as_ref())?;
+            eprintln!("{}: {} datasheets, {} weapons, {} detachments, {} enhancements", cat.name, cat.units.len(), cat.weapons.len(), cat.detachments.len(), cat.enhancements.len());
+            println!("{}", serde_json::to_string_pretty(&cat)?);
+            Ok(())
+        }
         Some("mission") => {
             let m = mission::default_mission(&repo_root()?, args.get(1).map(String::as_str).unwrap_or("dawn-of-war"))?;
             println!("{}", serde_json::to_string_pretty(&m)?);
             Ok(())
         }
         _ => {
-            eprintln!("usage: content report | pack <file.ros> | mission [pattern-id]");
+            eprintln!("usage: content report | pack <file.ros> | catalogue <faction-slug> | mission [pattern-id]");
             std::process::exit(2);
         }
     }

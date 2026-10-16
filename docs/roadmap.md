@@ -49,3 +49,14 @@
 - [ ] Rooms, seats, WebSocket protocol
 - [ ] Seed + action log persistence, reconnect, replay
 - [ ] Two browsers play a full game
+
+## 6. Multiplayer (in progress, see docs/multiplayer.md)
+
+- [x] Faction catalogue for the editor: datasheets, points by size with BSData overlay, model rows and loadout variants, wargear options, weapons, enhancements, detachments with detachment points, leader eligibility — `crates/content/src/catalogue.rs`, test `catalogue_has_the_mechanicus_essentials`
+- [x] Editor army definition, validation and pack building — `crates/content/src/army_def.rs`, test `an_editor_army_validates_and_plays`
+- [ ] Server: accounts, armies, lobbies with join codes, WebSocket games
+- [ ] Client: login, armies and editor, lobby, networked battle
+
+## Deferred
+
+- [ ] **CPU opponent.** A server-held seat that picks actions. Needs a legal-move generator in the engine (deployment spots, moves, targets, charges) before any policy can sit on top of it.
