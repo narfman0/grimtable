@@ -7,6 +7,7 @@
 //!            two sources for the configured factions.
 
 use anyhow::{bail, Context, Result};
+use content::{enrich, mission, pack};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +23,25 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
         Some("report") => report(&repo_root()?),
+        Some("pack") => {
+            let root = repo_root()?;
+            let path = args.get(1).context("usage: content pack <file.ros>")?;
+            let army = roster::parse_ros_file(path)?;
+            let slug = enrich::faction_slug(&army.faction).unwrap_or("_core");
+            let abilities = enrich::load_abilities(&root, slug)?;
+            let pack = pack::build_pack(&army, &abilities);
+            let missing: Vec<&str> = pack.units.iter().flat_map(|u| u.abilities.iter().filter(|a| a.effect.is_none()).map(|a| a.name.as_str())).collect();
+            eprintln!("{}: {} units, {} pts, {} abilities without effect data: {:?}", pack.name, pack.units.len(), pack.points, missing.len(), missing);
+            println!("{}", serde_json::to_string_pretty(&pack)?);
+            Ok(())
+        }
+        Some("mission") => {
+            let m = mission::default_mission(&repo_root()?, args.get(1).map(String::as_str).unwrap_or("dawn-of-war"))?;
+            println!("{}", serde_json::to_string_pretty(&m)?);
+            Ok(())
+        }
         _ => {
-            eprintln!("usage: content report");
+            eprintln!("usage: content report | pack <file.ros> | mission [pattern-id]");
             std::process::exit(2);
         }
     }

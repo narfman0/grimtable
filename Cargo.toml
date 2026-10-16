@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/engine", "crates/content", "crates/server"]
+members = ["crates/engine", "crates/content", "crates/server", "crates/roster", "crates/wasm"]
 
 [workspace.package]
 edition = "2021"
@@ -11,3 +11,4 @@ repository = "https://github.com/narfman0/grimtable"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+roxmltree = "0.21"
