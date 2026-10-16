@@ -11,6 +11,32 @@ use std::collections::HashMap;
 /// Build a pack. `abilities` maps lower-cased ability name → 40kdc entry
 /// (an object with at least `name`, `effect` and `ability_type`).
 pub fn build_pack(army: &Army, abilities: &HashMap<String, Value>) -> ArmyPack {
+    build_pack_with_detachments(army, abilities, None)
+}
+
+/// Same, attaching the chosen detachment's rule when `detachments_json` (the
+/// faction's 40kdc `detachments.json` text) names it.
+pub fn build_pack_with_detachments(army: &Army, abilities: &HashMap<String, Value>, detachments_json: Option<&str>) -> ArmyPack {
+    let mut pack = build_pack_inner(army, abilities);
+    if let (Some(text), Some(chosen)) = (detachments_json, &army.detachment) {
+        if let Ok(list) = serde_json::from_str::<Vec<Value>>(text) {
+            let rule_id = list
+                .iter()
+                .find(|d| d.get("name").and_then(Value::as_str).map(|n| n.eq_ignore_ascii_case(chosen)).unwrap_or(false))
+                .and_then(|d| d.get("detachment_rule_id").and_then(Value::as_str));
+            if let Some(id) = rule_id {
+                if let Some(a) = abilities.values().find(|a| a.get("ability_id").and_then(Value::as_str) == Some(id)) {
+                    if let Some(name) = a.get("name").and_then(Value::as_str) {
+                        pack.army_rules.push(AbilitySpec { name: name.to_string(), effect: a.get("effect").cloned() });
+                    }
+                }
+            }
+        }
+    }
+    pack
+}
+
+fn build_pack_inner(army: &Army, abilities: &HashMap<String, Value>) -> ArmyPack {
     // Faction-wide rules apply to every unit. Detachment rules are matched by
     // the detachment's name appearing in the entry's unit list or name.
     let mut army_rules: Vec<AbilitySpec> = abilities

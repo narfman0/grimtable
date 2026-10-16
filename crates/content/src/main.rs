@@ -29,7 +29,8 @@ fn main() -> Result<()> {
             let army = roster::parse_ros_file(path)?;
             let slug = enrich::faction_slug(&army.faction).unwrap_or("_core");
             let abilities = enrich::load_abilities(&root, slug)?;
-            let pack = pack::build_pack(&army, &abilities);
+            let detachments = std::fs::read_to_string(root.join("data/40kdc-data/data/core").join(slug).join("detachments.json")).ok();
+            let pack = pack::build_pack_with_detachments(&army, &abilities, detachments.as_deref());
             let missing: Vec<&str> = pack.units.iter().flat_map(|u| u.abilities.iter().filter(|a| a.effect.is_none()).map(|a| a.name.as_str())).collect();
             eprintln!("{}: {} units, {} pts, {} abilities without effect data: {:?}", pack.name, pack.units.len(), pack.points, missing.len(), missing);
             println!("{}", serde_json::to_string_pretty(&pack)?);

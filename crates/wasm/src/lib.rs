@@ -95,6 +95,23 @@ pub fn build_pack(ros_xml: &str, abilities_json: &str, core_abilities_json: &str
     Ok(serde_json::to_string(&pack).unwrap())
 }
 
+/// `build_pack` plus the chosen detachment's rule, given the faction's 40kdc
+/// `detachments.json` text (fetch `/data/core/<slug>/detachments.json`).
+#[wasm_bindgen]
+pub fn build_pack_with_detachments(ros_xml: &str, abilities_json: &str, core_abilities_json: &str, detachments_json: &str) -> Result<String, JsError> {
+    let army = roster::parse_ros(ros_xml).map_err(|e| JsError::new(&format!("roster: {e}")))?;
+    let mut map = std::collections::HashMap::new();
+    for text in [core_abilities_json, abilities_json] {
+        if text.trim().is_empty() {
+            continue;
+        }
+        content::enrich::index_abilities(text, &mut map).map_err(|e| JsError::new(&format!("abilities: {e}")))?;
+    }
+    let det = if detachments_json.trim().is_empty() { None } else { Some(detachments_json) };
+    let pack = content::pack::build_pack_with_detachments(&army, &map, det);
+    Ok(serde_json::to_string(&pack).unwrap())
+}
+
 /// The 40kdc faction slug for a roster's catalogue name, so the client knows
 /// which abilities file to fetch.
 #[wasm_bindgen]

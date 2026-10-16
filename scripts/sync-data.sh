@@ -11,5 +11,9 @@ for d in data/40kdc-data/data/enrichment/*/; do
   f=$(basename "$d")
   [ -f "$d/abilities.json" ] && mkdir -p "$out/enrichment/$f" && cp "$d/abilities.json" "$out/enrichment/$f/"
 done
+for d in data/40kdc-data/data/core/*/; do
+  f=$(basename "$d")
+  [ -f "$d/detachments.json" ] && mkdir -p "$out/core/$f" && cp "$d/detachments.json" "$out/core/$f/"
+done
 cp crates/roster/fixtures/*.ros "$out/fixtures/"
 echo "synced to $out"

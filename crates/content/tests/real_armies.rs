@@ -18,7 +18,8 @@ fn load(name: &str) -> engine::content::ArmyPack {
     let army = roster::parse_ros_file(root.join("crates/roster/fixtures").join(format!("{name}.ros"))).unwrap();
     let slug = enrich::faction_slug(&army.faction).unwrap();
     let abilities = enrich::load_abilities(&root, slug).unwrap();
-    pack::build_pack(&army, &abilities)
+    let detachments = std::fs::read_to_string(root.join("data/40kdc-data/data/core").join(slug).join("detachments.json")).ok();
+    pack::build_pack_with_detachments(&army, &abilities, detachments.as_deref())
 }
 
 fn ok(state: &mut GameState, player: usize, action: Action) {
@@ -268,4 +269,25 @@ fn report_what_the_engine_leaves_to_the_players() {
         notes.dedup();
         eprintln!("{a}: {} abilities left to the players: {}", notes.len(), notes.join(" | "));
     }
+}
+
+#[test]
+fn detachment_rules_ride_on_the_pack() {
+    let mech = load("mechanicus");
+    assert!(mech.army_rules.iter().any(|r| r.name == "War-form Mantles"), "{:?}", mech.army_rules.iter().map(|r| &r.name).collect::<Vec<_>>());
+    let cust = load("custodes");
+    assert!(cust.army_rules.iter().any(|r| r.name == "Martial Mastery"));
+    let nec = load("necrons");
+    assert!(nec.army_rules.iter().any(|r| r.name == "Command Protocols"));
+
+    let s = fresh("mechanicus", "necrons");
+    let rangers = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Skitarii Rangers").unwrap();
+    let b = engine::rules::unit_buffs(&s, rangers, None, None);
+    // As the data currently encodes it: invulnerable save and Feel No Pain army-wide.
+    assert_eq!((b.invuln, b.feel_no_pain), (Some(4), Some(5)), "{b:?}");
+
+    let s = fresh("custodes", "necrons");
+    let guard = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Custodian Guard").unwrap();
+    let b = engine::rules::unit_buffs(&s, guard, None, Some(engine::effects::AttackType::Melee));
+    assert!(b.choices_pending.iter().any(|(n, _)| n == "Martial Mastery"), "{:?}", b.choices_pending);
 }

@@ -251,6 +251,11 @@ fn apply(name: &str, e: &Effect, ctx: &Ctx, out: &mut Buffs) {
                 _ => out.unsupported.push(format!("{name} ({roll} re-roll)")),
             }
         }
+        "stat-modifier" if matches!(m.get("stat").and_then(Value::as_str), Some("InvSv") | Some("invuln") | Some("Inv")) => {
+            if let Some(v) = m.get("value").and_then(Value::as_u64) {
+                out.invuln = Some(out.invuln.map_or(v as u8, |x| x.min(v as u8)));
+            }
+        }
         "stat-modifier" => {
             let stat = m.get("stat").and_then(Value::as_str).unwrap_or("");
             let op = m.get("operation").and_then(Value::as_str).unwrap_or("add");
@@ -365,6 +370,8 @@ fn condition(c: &Value, ctx: &Ctx, name: &str, out: &mut Buffs) -> bool {
             _ => false,
         },
         "is-battle-shocked" => ctx.battle_shocked,
+        // Approximation: a unit led by a Character, or a Character itself.
+        "model-is-leader" => ctx.attached || ctx.unit_keywords.iter().any(|k| k.eq_ignore_ascii_case("Character")),
         "unit-below-half-strength" => ctx.below_half_strength,
         "charged-this-turn" => ctx.charged_this_turn,
         "within-range-of-objective" => ctx.within_range_of_objective,
