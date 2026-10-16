@@ -8,14 +8,24 @@ use roster::{Army, Base, UnitEntry};
 use serde_json::Value;
 use std::collections::HashMap;
 
-/// Build a pack. `abilities` maps lower-cased ability name → effect tree.
+/// Build a pack. `abilities` maps lower-cased ability name → 40kdc entry
+/// (an object with at least `name`, `effect` and `ability_type`).
 pub fn build_pack(army: &Army, abilities: &HashMap<String, Value>) -> ArmyPack {
+    // Faction-wide rules apply to every unit. Detachment rules are matched by
+    // the detachment's name appearing in the entry's unit list or name.
+    let mut army_rules: Vec<AbilitySpec> = abilities
+        .values()
+        .filter(|a| a.get("ability_type").and_then(Value::as_str) == Some("faction"))
+        .filter_map(|a| Some(AbilitySpec { name: a.get("name")?.as_str()?.to_string(), effect: a.get("effect").cloned() }))
+        .collect();
+    army_rules.sort_by(|a, b| a.name.cmp(&b.name));
     ArmyPack {
         name: army.name.clone(),
         faction: army.faction.clone(),
         detachment: army.detachment.clone(),
         points: army.points,
         units: army.units.iter().map(|u| unit_spec(u, abilities)).collect(),
+        army_rules,
     }
 }
 
@@ -119,7 +129,7 @@ fn unit_spec(u: &UnitEntry, abilities: &HashMap<String, Value>) -> UnitSpec {
         abilities: u
             .abilities
             .iter()
-            .map(|name| AbilitySpec { name: name.clone(), effect: abilities.get(&name.to_ascii_lowercase()).cloned() })
+            .map(|name| AbilitySpec { name: name.clone(), effect: abilities.get(&name.to_ascii_lowercase()).and_then(|a| a.get("effect")).cloned() })
             .collect(),
         can_lead: u.can_lead.clone(),
         transport_capacity: u.transport_capacity,

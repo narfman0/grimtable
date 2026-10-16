@@ -36,6 +36,52 @@ pub enum WeaponAbility {
     Anti { keyword: String, threshold: u8 },
 }
 
+impl WeaponAbility {
+    /// Parse a printed weapon keyword such as "Rapid Fire 2", "Sustained Hits D3",
+    /// "Anti-Vehicle 4+" or "Twin-linked". Case-insensitive.
+    pub fn parse(text: &str) -> Option<WeaponAbility> {
+        let t = text.replace('\u{a0}', " ");
+        let t = t.trim();
+        let lower = t.to_ascii_lowercase();
+        let number = |prefix: &str| -> Option<String> {
+            lower.strip_prefix(prefix).map(|r| r.trim().to_string())
+        };
+        Some(match lower.as_str() {
+            "assault" => WeaponAbility::Assault,
+            "blast" => WeaponAbility::Blast,
+            "devastating wounds" => WeaponAbility::DevastatingWounds,
+            "extra attacks" => WeaponAbility::ExtraAttacks,
+            "hazardous" => WeaponAbility::Hazardous,
+            "heavy" => WeaponAbility::Heavy,
+            "ignores cover" => WeaponAbility::IgnoresCover,
+            "indirect fire" => WeaponAbility::IndirectFire,
+            "lance" => WeaponAbility::Lance,
+            "lethal hits" => WeaponAbility::LethalHits,
+            "pistol" => WeaponAbility::Pistol,
+            "precision" => WeaponAbility::Precision,
+            "psychic" => WeaponAbility::Psychic,
+            "torrent" => WeaponAbility::Torrent,
+            "twin-linked" | "twin linked" => WeaponAbility::TwinLinked,
+            _ => {
+                if let Some(n) = number("melta") {
+                    WeaponAbility::Melta(n.parse().ok()?)
+                } else if let Some(n) = number("rapid fire") {
+                    WeaponAbility::RapidFire(n.parse().ok()?)
+                } else if let Some(n) = number("sustained hits") {
+                    WeaponAbility::SustainedHits(DiceExpr::parse(&n).ok()?)
+                } else if let Some(rest) = number("anti-").or_else(|| number("anti ")) {
+                    let (kw, thr) = rest.rsplit_once(' ')?;
+                    let original = &t[t.len() - rest.len()..];
+                    let keyword = original[..kw.len()].trim().to_string();
+                    WeaponAbility::Anti { keyword, threshold: thr.trim_end_matches('+').parse().ok()? }
+                } else {
+                    return None;
+                }
+            }
+        })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Weapon {
     pub name: String,

@@ -70,7 +70,7 @@ pub fn mission() -> Mission {
 }
 
 pub fn demo_game(seed: u64) -> GameState {
-    let a = ArmyPack { name: "Red".into(), faction: "Red".into(), detachment: None, points: 400, units: vec![squad("Troopers", 5, vec![]), captain(), squad("Scouts", 3, vec![CoreRule::Scouts(6)]), squad("Reserves", 5, vec![CoreRule::DeepStrike])] };
-    let b = ArmyPack { name: "Blue".into(), faction: "Blue".into(), detachment: None, points: 300, units: vec![squad("Troopers", 5, vec![]), squad("Troopers", 5, vec![]), squad("Stalkers", 3, vec![CoreRule::Infiltrators, CoreRule::Stealth])] };
+    let a = ArmyPack { name: "Red".into(), faction: "Red".into(), detachment: None, points: 400, units: vec![squad("Troopers", 5, vec![]), captain(), squad("Scouts", 3, vec![CoreRule::Scouts(6)]), squad("Reserves", 5, vec![CoreRule::DeepStrike])], army_rules: vec![] };
+    let b = ArmyPack { name: "Blue".into(), faction: "Blue".into(), detachment: None, points: 300, units: vec![squad("Troopers", 5, vec![]), squad("Troopers", 5, vec![]), squad("Stalkers", 3, vec![CoreRule::Infiltrators, CoreRule::Stealth])], army_rules: vec![] };
     GameState::new([a, b], mission(), EditionParams::default(), seed)
 }

@@ -10,17 +10,18 @@ use crate::attack::Reroll;
 use crate::state::Phase;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 
 pub type Effect = Value;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AttackType {
     Ranged,
     Melee,
 }
 
 /// The situation an ability is evaluated in.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct Ctx<'a> {
     pub phase: Option<Phase>,
     pub my_turn: bool,
@@ -33,6 +34,18 @@ pub struct Ctx<'a> {
     pub charged_this_turn: bool,
     pub within_range_of_objective: bool,
     pub in_engagement_range: bool,
+    /// A timing marker for `timing-is` conditions, e.g. "end-of-command-phase".
+    pub timing: Option<&'a str>,
+    /// Chosen option per stance or choice name.
+    pub stances: Option<&'a BTreeMap<String, usize>>,
+    /// Is a friendly unit with every word of the keyword within `range`?
+    pub near_friendly: Option<&'a dyn Fn(&str, f32) -> bool>,
+}
+
+impl std::fmt::Debug for Ctx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ctx").field("phase", &self.phase).field("attached", &self.attached).finish()
+    }
 }
 
 /// What a set of abilities adds up to for one unit in one situation.
@@ -55,6 +68,16 @@ pub struct Buffs {
     pub deep_strike: bool,
     pub stealth: bool,
     pub lone_operative: bool,
+    /// Weapon abilities granted to the unit's weapons: (printed keyword, kind filter).
+    pub weapon_abilities: Vec<(String, Option<AttackType>)>,
+    /// Modifier applied to enemy hit rolls against this unit in melee.
+    pub enemy_melee_hit_modifier: i32,
+    /// Critical hit threshold override (e.g. 5 for "crits on 5+").
+    pub critical_hit_on: Option<u8>,
+    /// Wounds recovered at the end of the Command phase, as a dice expression.
+    pub recovery: Option<String>,
+    /// Stances and choices that still need the player to pick an option.
+    pub choices_pending: Vec<(String, Vec<String>)>,
     /// Ability names (or node types) the engine does not apply. Players do.
     pub unsupported: Vec<String>,
 }
@@ -87,6 +110,16 @@ impl Buffs {
         self.deep_strike |= other.deep_strike;
         self.stealth |= other.stealth;
         self.lone_operative |= other.lone_operative;
+        self.weapon_abilities.extend(other.weapon_abilities);
+        self.enemy_melee_hit_modifier += other.enemy_melee_hit_modifier;
+        self.critical_hit_on = match (self.critical_hit_on, other.critical_hit_on) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        if other.recovery.is_some() {
+            self.recovery = other.recovery;
+        }
+        self.choices_pending.extend(other.choices_pending);
         self.unsupported.extend(other.unsupported);
     }
 
@@ -120,7 +153,18 @@ fn apply(name: &str, e: &Effect, ctx: &Ctx, out: &mut Buffs) {
     let ty = e.get("type").and_then(Value::as_str).unwrap_or("");
     let target = e.get("target").and_then(Value::as_str).unwrap_or("self");
     let m = e.get("modifier").cloned().unwrap_or(Value::Null);
-    let applies_to_bearer = matches!(target, "self" | "unit" | "bearer" | "model" | "attached-unit");
+    let applies_to_bearer = matches!(target, "self" | "unit" | "bearer" | "model" | "attached-unit" | "all-friendly");
+    // Effects scoped to one attack type only apply in that kind of attack.
+    if let Some(at) = m.get("attack_type").or(m.get("context")).and_then(Value::as_str) {
+        let wanted = match at {
+            "melee" => Some(AttackType::Melee),
+            "ranged" | "shooting" => Some(AttackType::Ranged),
+            _ => None,
+        };
+        if wanted.is_some() && wanted != ctx.attack_type && ty != "roll-modifier" {
+            return;
+        }
+    }
     match ty {
         "conditional" => {
             let ok = e.get("condition").map(|c| condition(c, ctx, name, out)).unwrap_or(true);
@@ -134,6 +178,42 @@ fn apply(name: &str, e: &Effect, ctx: &Ctx, out: &mut Buffs) {
             for step in e.get("steps").and_then(Value::as_array).into_iter().flatten() {
                 apply(name, step, ctx, out);
             }
+        }
+        "stance-select" | "choice" => {
+            let label = e.get("choice_label").and_then(Value::as_str).unwrap_or(name).to_string();
+            let options: Vec<&Value> = e.get("options").and_then(Value::as_array).into_iter().flatten().collect();
+            let names: Vec<String> = options
+                .iter()
+                .enumerate()
+                .map(|(i, o)| o.get("name").and_then(Value::as_str).map(String::from).unwrap_or_else(|| format!("option {}", i + 1)))
+                .collect();
+            match ctx.stances.and_then(|st| st.get(&label)).and_then(|&i| options.get(i)) {
+                Some(opt) => {
+                    let inner = opt.get("effect").unwrap_or(opt);
+                    apply(name, inner, ctx, out);
+                }
+                None => out.choices_pending.push((label, names)),
+            }
+        }
+        "bs-modifier" | "ws-modifier" => {
+            let v = m.get("value").and_then(Value::as_i64).unwrap_or(1) as i32;
+            let v = match m.get("operation").and_then(Value::as_str) {
+                Some("worsen") | Some("subtract") => -v,
+                _ => v,
+            };
+            out.stat_add.push((if ty == "bs-modifier" { "BS" } else { "WS" }.to_string(), v));
+        }
+        "roll-modifier" if target == "attacker" => {
+            let roll = m.get("roll").and_then(Value::as_str).unwrap_or("");
+            let ctxt = m.get("context").and_then(Value::as_str).unwrap_or("");
+            if roll == "hit" && ctxt == "melee" {
+                out.enemy_melee_hit_modifier += signed(&m);
+            } else {
+                out.unsupported.push(format!("{name} (enemy {roll} modifier)"));
+            }
+        }
+        "recovery-pool" => {
+            out.recovery = Some(m.get("dice").and_then(Value::as_str).unwrap_or("D3").to_string());
         }
         _ if !applies_to_bearer => out.unsupported.push(format!("{name} ({ty} on {target})")),
         "feel-no-pain" => {
@@ -177,13 +257,29 @@ fn apply(name: &str, e: &Effect, ctx: &Ctx, out: &mut Buffs) {
             if stat.is_empty() || op == "set" {
                 out.unsupported.push(format!("{name} (stat {stat} {op})"));
             } else {
-                out.stat_add.push((stat.to_string(), signed(&m)));
+                let v = m.get("value").and_then(Value::as_i64).unwrap_or(0) as i32;
+                let v = match op {
+                    "subtract" | "worsen" => -v,
+                    _ => v,
+                };
+                out.stat_add.push((stat.to_string(), v));
             }
         }
         "keyword-grant" => {
-            for k in m.get("keywords").and_then(Value::as_array).into_iter().flatten() {
-                if let Some(k) = k.as_str() {
-                    out.keywords.push(k.to_string());
+            let kind = match m.get("weapon_type").and_then(Value::as_str) {
+                Some("ranged") => Some(AttackType::Ranged),
+                Some("melee") => Some(AttackType::Melee),
+                _ => None,
+            };
+            let mut list: Vec<String> = m.get("keywords").and_then(Value::as_array).into_iter().flatten().filter_map(|k| k.as_str().map(String::from)).collect();
+            if let Some(k) = m.get("keyword").and_then(Value::as_str) {
+                list.push(k.to_string());
+            }
+            for k in list {
+                if crate::attack::WeaponAbility::parse(&k).is_some() {
+                    out.weapon_abilities.push((k, kind));
+                } else {
+                    out.keywords.push(k);
                 }
             }
         }
@@ -207,7 +303,9 @@ fn apply(name: &str, e: &Effect, ctx: &Ctx, out: &mut Buffs) {
             out.damage_reduction = out.damage_reduction.max(m.get("reduction").and_then(Value::as_u64).unwrap_or(0) as u32);
         }
         "deep-strike" => out.deep_strike = true,
-        "ability-grant" => match m.get("ability_id").and_then(Value::as_str).unwrap_or("") {
+        "ability-grant" => match m.get("ability_id").or(m.get("grant_type")).and_then(Value::as_str).unwrap_or("") {
+            "melee-critical-hit-on-5-plus" if ctx.attack_type == Some(AttackType::Melee) => out.critical_hit_on = Some(5),
+            "melee-critical-hit-on-5-plus" => {}
             "deep-strike" => out.deep_strike = true,
             "fights-first" => out.fights_first = true,
             "stealth" => out.stealth = true,
@@ -274,6 +372,18 @@ fn condition(c: &Value, ctx: &Ctx, name: &str, out: &mut Buffs) -> bool {
             Some("in-engagement-range") => ctx.in_engagement_range,
             _ => !ctx.in_engagement_range,
         },
+        "timing-is" => p.get("timing").and_then(Value::as_str) == ctx.timing,
+        "unit-within-range-of" => {
+            let range = p.get("range").and_then(Value::as_f64).unwrap_or(6.0) as f32;
+            let kw = p.get("keyword").and_then(Value::as_str).unwrap_or("");
+            match (p.get("target_type").and_then(Value::as_str), ctx.near_friendly) {
+                (Some("friendly-keyword"), Some(f)) => f(kw, range),
+                _ => {
+                    out.unsupported.push(format!("{name} (condition unit-within-range-of)"));
+                    false
+                }
+            }
+        }
         other => {
             out.unsupported.push(format!("{name} (condition {other})"));
             false

@@ -14,6 +14,9 @@ pub struct ArmyPack {
     pub detachment: Option<String>,
     pub points: u32,
     pub units: Vec<UnitSpec>,
+    /// Army-wide rules (faction and detachment rules) evaluated for every unit.
+    #[serde(default)]
+    pub army_rules: Vec<AbilitySpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

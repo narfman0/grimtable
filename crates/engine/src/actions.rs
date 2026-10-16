@@ -29,6 +29,8 @@ pub enum Action {
     DeclareCharge { unit: UnitId, targets: Vec<UnitId> },
     ChargeMove { unit: UnitId, positions: Vec<Vec2> },
     Fight { unit: UnitId, target: UnitId, pile_in: Option<Vec<Vec2>>, consolidate: Option<Vec<Vec2>> },
+    /// Pick an option for an army-wide stance or a choice an ability offers.
+    SelectStance { name: String, option: usize },
     EndPhase,
 }
 
@@ -76,7 +78,57 @@ pub fn apply(state: &mut GameState, player: PlayerId, action: Action) -> RuleRes
         Action::DeclareCharge { unit, targets } => crate::combat::declare_charge(state, player, unit, targets),
         Action::ChargeMove { unit, positions } => crate::combat::charge_move(state, player, unit, positions),
         Action::Fight { unit, target, pile_in, consolidate } => crate::combat::fight(state, player, unit, target, pile_in, consolidate),
+        Action::SelectStance { name, option } => {
+            state.players[player].stances.insert(name.clone(), option);
+            state.log(Some(player), format!("{} chose option {} for {name}", state.players[player].name, option + 1));
+            Ok(())
+        }
         Action::EndPhase => end_phase(state),
+    }
+}
+
+/// End of the Command phase: units with a recovery pool regain wounds, then
+/// models, as far as the pool stretches.
+fn recovery(state: &mut GameState) {
+    let active = state.active;
+    let ids: Vec<UnitId> = state.units.iter().filter(|u| u.owner == active && u.on_board()).map(|u| u.id).collect();
+    for id in ids {
+        let buffs = rules::unit_buffs_at(state, &state.units[id], None, None, Some("end-of-command-phase"));
+        let Some(dice) = buffs.recovery else { continue };
+        let Ok(expr) = DiceExpr::parse(&dice) else { continue };
+        let u = &state.units[id];
+        let needs = u.models.iter().any(|m| m.wounds < m.max_wounds);
+        if !needs {
+            continue;
+        }
+        let mut pool = state.rng.roll(&expr);
+        let rolled = pool;
+        let u = &mut state.units[id];
+        let mut healed = 0;
+        let mut returned = 0;
+        // Damaged models first.
+        for m in u.models.iter_mut().filter(|m| m.alive() && m.wounds < m.max_wounds) {
+            let need = m.max_wounds - m.wounds;
+            let give = need.min(pool);
+            m.wounds += give;
+            pool -= give;
+            healed += give;
+        }
+        // Then destroyed models, each needing its full wounds; they return next
+        // to a surviving model.
+        let anchor = u.models.iter().find(|m| m.alive()).and_then(|m| m.pos);
+        for m in u.models.iter_mut().filter(|m| !m.alive() && !m.is_leader) {
+            if pool >= m.max_wounds {
+                if let Some(a) = anchor {
+                    pool -= m.max_wounds;
+                    m.wounds = m.max_wounds;
+                    m.pos = Some(Vec2::new(a.x + 0.1 * returned as f32, a.y + 1.2 + 0.3 * returned as f32));
+                    returned += 1;
+                }
+            }
+        }
+        let name = u.spec.name.clone();
+        state.log(Some(active), format!("{name} recovery: rolled {rolled}, healed {healed} wounds, {returned} models returned"));
     }
 }
 
@@ -484,6 +536,7 @@ fn end_phase(state: &mut GameState) -> RuleResult {
             }
         }
         Phase::Command => {
+            recovery(state);
             score(state, AwardTiming::EndOfCommandPhase);
             state.phase = Phase::Movement;
             Ok(())

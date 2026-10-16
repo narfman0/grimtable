@@ -89,12 +89,7 @@ pub fn build_pack(ros_xml: &str, abilities_json: &str, core_abilities_json: &str
         if text.trim().is_empty() {
             continue;
         }
-        let list: Vec<serde_json::Value> = serde_json::from_str(text).map_err(|e| JsError::new(&format!("abilities: {e}")))?;
-        for a in list {
-            if let (Some(name), Some(effect)) = (a.get("name").and_then(|v| v.as_str()), a.get("effect")) {
-                map.entry(name.to_ascii_lowercase()).or_insert_with(|| effect.clone());
-            }
-        }
+        content::enrich::index_abilities(text, &mut map).map_err(|e| JsError::new(&format!("abilities: {e}")))?;
     }
     let pack = content::pack::build_pack(&army, &map);
     Ok(serde_json::to_string(&pack).unwrap())

@@ -199,3 +199,73 @@ fn custodes_versus_mechanicus_runs_to_the_end() {
     let s = play(s);
     assert!(s.winner.is_some());
 }
+
+fn fresh(a: &str, b: &str) -> GameState {
+    let mission = mission::default_mission(&root(), "dawn-of-war").unwrap();
+    GameState::new([load(a), load(b)], mission, engine::content::EditionParams::default(), 5)
+}
+
+#[test]
+fn army_rules_offer_stances_and_apply_once_chosen() {
+    let mut s = fresh("mechanicus", "necrons");
+    let rangers = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Skitarii Rangers").unwrap().id;
+    let before = engine::rules::unit_buffs(&s, &s.units[rangers], None, Some(engine::effects::AttackType::Ranged));
+    assert!(before.choices_pending.iter().any(|(name, opts)| name == "Doctrina Imperatives" && opts.len() == 2), "{:?}", before.choices_pending);
+    assert_eq!(before.stat("BS"), 0);
+    ok(&mut s, 0, Action::SelectStance { name: "Doctrina Imperatives".into(), option: 0 });
+    let after = engine::rules::unit_buffs(&s, &s.units[rangers], None, Some(engine::effects::AttackType::Ranged));
+    assert!(after.choices_pending.iter().all(|(n, _)| n != "Doctrina Imperatives"));
+    assert_eq!(after.stat("BS"), 1, "{after:?}");
+    assert!(after.weapon_abilities.iter().any(|(k, _)| k == "Heavy"), "{:?}", after.weapon_abilities);
+    assert_eq!(after.enemy_melee_hit_modifier, -1, "Battleline get -1 to be hit in melee");
+}
+
+#[test]
+fn reanimation_restores_wounds_at_end_of_command_phase() {
+    let mut s = fresh("necrons", "mechanicus");
+    let warriors = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Necron Warriors").unwrap().id;
+    let buffs = engine::rules::unit_buffs_at(&s, &s.units[warriors], None, None, Some("end-of-command-phase"));
+    assert_eq!(buffs.recovery.as_deref(), Some("D3"), "{buffs:?}");
+    // Skip straight to a command phase of player 0 with two Warriors dead.
+    s.phase = Phase::Command;
+    s.round = 1;
+    s.active = 0;
+    for m in &mut s.units[warriors].models {
+        m.pos = Some(Vec2::new(10.0, 10.0));
+    }
+    s.units[warriors].deployed = true;
+    s.units[warriors].models[0].wounds = 0;
+    s.units[warriors].models[1].wounds = 0;
+    let alive_before = s.units[warriors].model_count();
+    ok(&mut s, 0, Action::EndPhase);
+    let alive_after = s.units[warriors].model_count();
+    assert!(alive_after > alive_before, "{} -> {}", alive_before, alive_after);
+    assert!(s.log.iter().any(|e| e.text.contains("recovery")));
+}
+
+#[test]
+fn katah_stance_grants_lethal_hits_in_the_fight_phase() {
+    let mut s = fresh("custodes", "mechanicus");
+    let guard = s.units.iter().find(|u| u.owner == 0 && u.spec.name == "Custodian Guard").unwrap().id;
+    s.phase = Phase::Fight;
+    let pending = engine::rules::unit_buffs(&s, &s.units[guard], None, Some(engine::effects::AttackType::Melee));
+    assert!(pending.choices_pending.iter().any(|(n, _)| n == "Ka'tah Stance"), "{:?}", pending.choices_pending);
+    s.players[0].stances.insert("Ka'tah Stance".into(), 1);
+    let chosen = engine::rules::unit_buffs(&s, &s.units[guard], None, Some(engine::effects::AttackType::Melee));
+    assert!(chosen.weapon_abilities.iter().any(|(k, _)| k == "Lethal Hits"), "{:?}", chosen.weapon_abilities);
+}
+
+#[test]
+fn report_what_the_engine_leaves_to_the_players() {
+    for (a, b) in [("mechanicus", "necrons"), ("necrons", "mechanicus"), ("custodes", "mechanicus")] {
+        let s = fresh(a, b);
+        let mut notes: Vec<String> = Vec::new();
+        for u in s.units.iter().filter(|u| u.owner == 0) {
+            let bf = engine::rules::unit_buffs(&s, u, None, None);
+            notes.extend(bf.unsupported);
+        }
+        notes.sort();
+        notes.dedup();
+        eprintln!("{a}: {} abilities left to the players: {}", notes.len(), notes.join(" | "));
+    }
+}

@@ -8,6 +8,11 @@ use crate::state::{GameState, Phase, PlayerId, Unit, UnitId};
 
 /// Everything a unit's core rules and abilities grant it in the given situation.
 pub fn unit_buffs(state: &GameState, unit: &Unit, target: Option<&Unit>, attack_type: Option<AttackType>) -> Buffs {
+    unit_buffs_at(state, unit, target, attack_type, None)
+}
+
+/// Same, with a timing marker such as "end-of-command-phase".
+pub fn unit_buffs_at(state: &GameState, unit: &Unit, target: Option<&Unit>, attack_type: Option<AttackType>, timing: Option<&str>) -> Buffs {
     let mut buffs = Buffs::default();
     for rule in &unit.spec.core_rules {
         match rule {
@@ -21,6 +26,11 @@ pub fn unit_buffs(state: &GameState, unit: &Unit, target: Option<&Unit>, attack_
         }
     }
     let target_keywords = target.map(|t| t.spec.keywords.as_slice());
+    let near_friendly = |keyword: &str, range: f32| -> bool {
+        state.friends_of(unit.owner).filter(|f| f.id != unit.id).any(|f| {
+            keyword.split_whitespace().all(|w| f.has_keyword(w)) && unit_distance(unit, f).map(|d| d <= range).unwrap_or(false)
+        })
+    };
     let ctx = Ctx {
         phase: Some(state.phase),
         my_turn: state.active == unit.owner,
@@ -33,11 +43,20 @@ pub fn unit_buffs(state: &GameState, unit: &Unit, target: Option<&Unit>, attack_
         charged_this_turn: unit.flags.charged,
         within_range_of_objective: nearest_objective_distance(state, unit).map(|d| d <= state.params.objective_range).unwrap_or(false),
         in_engagement_range: enemies_in_engagement_range(state, unit.id).next().is_some(),
+        timing,
+        stances: Some(&state.players[unit.owner].stances),
+        near_friendly: Some(&near_friendly),
     };
     for ability in &unit.spec.abilities {
         match &ability.effect {
             Some(e) => buffs.merge(effects::evaluate(&ability.name, e, &ctx)),
             None => buffs.unsupported.push(ability.name.clone()),
+        }
+    }
+    for rule in &state.players[unit.owner].rules {
+        match &rule.effect {
+            Some(e) => buffs.merge(effects::evaluate(&rule.name, e, &ctx)),
+            None => buffs.unsupported.push(rule.name.clone()),
         }
     }
     buffs

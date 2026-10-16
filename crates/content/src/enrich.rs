@@ -41,7 +41,7 @@ pub fn faction_slug(catalogue: &str) -> Option<&'static str> {
 }
 
 /// Load `data/enrichment/<faction>/abilities.json` plus the shared `_core`
-/// file, keyed by lower-cased ability name.
+/// file: whole entries keyed by lower-cased ability name.
 pub fn load_abilities(root: &Path, faction: &str) -> Result<HashMap<String, Value>> {
     let mut map = HashMap::new();
     for dir in ["_core", faction] {
@@ -50,12 +50,18 @@ pub fn load_abilities(root: &Path, faction: &str) -> Result<HashMap<String, Valu
             continue;
         }
         let text = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-        let list: Vec<Value> = serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
-        for a in list {
-            if let (Some(name), Some(effect)) = (a.get("name").and_then(Value::as_str), a.get("effect")) {
-                map.entry(name.to_ascii_lowercase()).or_insert_with(|| effect.clone());
-            }
-        }
+        index_abilities(&text, &mut map).with_context(|| format!("parsing {}", path.display()))?;
     }
     Ok(map)
+}
+
+/// Index the text of one abilities.json into `map` (first entry per name wins).
+pub fn index_abilities(text: &str, map: &mut HashMap<String, Value>) -> Result<()> {
+    let list: Vec<Value> = serde_json::from_str(text)?;
+    for a in list {
+        if let Some(name) = a.get("name").and_then(Value::as_str) {
+            map.entry(name.to_ascii_lowercase()).or_insert(a);
+        }
+    }
+    Ok(())
 }

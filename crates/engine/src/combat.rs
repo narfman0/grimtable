@@ -13,9 +13,18 @@ fn err<T>(msg: impl Into<String>) -> Result<T, RuleError> {
     Err(RuleError(msg.into()))
 }
 
-/// A weapon profile after stat modifiers.
-fn modified_weapon(base: &Weapon, buffs: &Buffs) -> Weapon {
+/// A weapon profile after stat modifiers and granted abilities.
+fn modified_weapon(base: &Weapon, buffs: &Buffs, kind: AttackType) -> Weapon {
     let mut w = base.clone();
+    for (text, filter) in &buffs.weapon_abilities {
+        if filter.map(|f| f == kind).unwrap_or(true) {
+            if let Some(a) = WeaponAbility::parse(text) {
+                if !w.abilities.contains(&a) {
+                    w.abilities.push(a);
+                }
+            }
+        }
+    }
     w.attacks.add += buffs.stat("A");
     w.strength = (w.strength as i32 + buffs.stat("S")).max(1) as u32;
     w.ap = (w.ap as i32 + buffs.stat("AP")).max(0) as u32;
@@ -232,7 +241,7 @@ pub fn shoot(state: &mut GameState, player: PlayerId, unit: UnitId, assignments:
         let s_buffs = unit_buffs(state, shooter, Some(target), Some(AttackType::Ranged));
         let t_buffs = unit_buffs(state, target, None, None);
         let spec = shooter.spec.weapons[plan.weapon].clone();
-        let weapon = modified_weapon(&spec.profile, &s_buffs);
+        let weapon = modified_weapon(&spec.profile, &s_buffs, AttackType::Ranged);
         let heavy_ok = matches!(shooter.flags.moved, None | Some(MoveKind::Stationary)) && !shooter.flags.arrived_this_turn;
         let mut abstract_t = abstract_target(state, plan.target, &t_buffs);
         if t_buffs.damage_reduction > 0 {
@@ -253,6 +262,7 @@ pub fn shoot(state: &mut GameState, player: PlayerId, unit: UnitId, assignments:
                 wound_modifier: s_buffs.wound_modifier,
                 reroll_hits: s_buffs.reroll_hits,
                 reroll_wounds: s_buffs.reroll_wounds,
+                critical_hit_on: s_buffs.critical_hit_on.unwrap_or(6),
                 modifier_cap: state.params.modifier_cap,
                 ..Default::default()
             };
@@ -294,7 +304,7 @@ pub fn shoot(state: &mut GameState, player: PlayerId, unit: UnitId, assignments:
             if roll <= state.params.hazardous_fail_on {
                 let u = &mut state.units[unit];
                 let Some(idx) = u.models.iter().position(|m| m.alive() && m.weapons.contains(&wi)) else { continue };
-                let big = u.has_keyword("Character") || u.has_keyword("Vehicle") || u.has_keyword("Monster");
+                let big = u.has_keyword("Character") || u.has_keyword("Vehicle") || u.has_keyword("Monster") || u.models[idx].is_leader;
                 let m = &mut u.models[idx];
                 if big {
                     m.wounds = m.wounds.saturating_sub(3);
@@ -556,7 +566,7 @@ pub fn fight(state: &mut GameState, player: PlayerId, unit: UnitId, target: Unit
     let mut abstract_t = abstract_target(state, target, &t_buffs);
     let charged = state.units[unit].flags.charged;
     for (wi, count) in groups {
-        let weapon = modified_weapon(&state.units[unit].spec.weapons[wi].profile, &s_buffs);
+        let weapon = modified_weapon(&state.units[unit].spec.weapons[wi].profile, &s_buffs, AttackType::Melee);
         let lance = charged && weapon.has(|a| matches!(a, WeaponAbility::Lance));
         let mut total = attack::Outcome::default();
         let mut lines = Vec::new();
@@ -565,10 +575,11 @@ pub fn fight(state: &mut GameState, player: PlayerId, unit: UnitId, target: Unit
                 break;
             }
             let sit = Situation {
-                hit_modifier: s_buffs.hit_modifier,
+                hit_modifier: s_buffs.hit_modifier + t_buffs.enemy_melee_hit_modifier,
                 wound_modifier: s_buffs.wound_modifier + if lance { 1 } else { 0 },
                 reroll_hits: s_buffs.reroll_hits,
                 reroll_wounds: s_buffs.reroll_wounds,
+                critical_hit_on: s_buffs.critical_hit_on.unwrap_or(6),
                 modifier_cap: state.params.modifier_cap,
                 ..Default::default()
             };

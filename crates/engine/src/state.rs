@@ -142,6 +142,12 @@ pub struct Player {
     pub cp: u32,
     pub vp: u32,
     pub vp_this_round: u32,
+    /// Army-wide rules from the pack.
+    #[serde(default)]
+    pub rules: Vec<crate::content::AbilitySpec>,
+    /// Chosen option index per rule or choice name (stances, imperatives).
+    #[serde(default)]
+    pub stances: std::collections::BTreeMap<String, usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -199,6 +205,8 @@ impl GameState {
                 cp: 0,
                 vp: 0,
                 vp_this_round: 0,
+                rules: pack.army_rules.clone(),
+                stances: Default::default(),
             });
             for spec in pack.units {
                 let id = units.len();

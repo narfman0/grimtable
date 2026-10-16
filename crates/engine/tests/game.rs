@@ -67,8 +67,8 @@ fn mission() -> Mission {
 }
 
 fn new_game(seed: u64) -> GameState {
-    let a = ArmyPack { name: "Red".into(), faction: "A".into(), detachment: None, points: 300, units: vec![squad("Troopers", 5, vec![]), captain(), squad("Scouts", 3, vec![CoreRule::Scouts(6)])] };
-    let b = ArmyPack { name: "Blue".into(), faction: "B".into(), detachment: None, points: 200, units: vec![squad("Troopers", 5, vec![]), squad("Troopers", 5, vec![])] };
+    let a = ArmyPack { name: "Red".into(), faction: "A".into(), detachment: None, points: 300, units: vec![squad("Troopers", 5, vec![]), captain(), squad("Scouts", 3, vec![CoreRule::Scouts(6)])], army_rules: vec![] };
+    let b = ArmyPack { name: "Blue".into(), faction: "B".into(), detachment: None, points: 200, units: vec![squad("Troopers", 5, vec![]), squad("Troopers", 5, vec![])], army_rules: vec![] };
     GameState::new([a, b], mission(), EditionParams::default(), seed)
 }
 
