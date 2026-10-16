@@ -16,6 +16,12 @@ use serde_json::json;
 
 pub const COOKIE: &str = "grimtable_session";
 
+/// How long a session lives without use. Each request within the last day
+/// of a session's life renews it. Override with `GRIMTABLE_SESSION_DAYS`.
+pub fn session_days() -> i64 {
+    std::env::var("GRIMTABLE_SESSION_DAYS").ok().and_then(|v| v.parse().ok()).filter(|&d| d > 0).unwrap_or(30)
+}
+
 /// The signed-in user, resolved from the session cookie.
 #[derive(Clone, Debug)]
 pub struct AuthUser {
@@ -37,13 +43,27 @@ impl FromRequestParts<AppState> for AuthUser {
             .next()
             .map(str::to_string)
             .ok_or_else(|| ApiError::unauthorized("not signed in"))?;
+        let days = session_days();
         let user = state.db.with(|c| {
-            c.query_row(
-                "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?1",
-                params![token],
-                |r| Ok(AuthUser { id: r.get(0)?, username: r.get(1)? }),
-            )
-            .optional()
+            let user = c
+                .query_row(
+                    "SELECT u.id, u.username FROM sessions s JOIN users u ON u.id = s.user_id \
+                     WHERE s.token = ?1 AND (s.expires_at IS NULL OR s.expires_at > strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))",
+                    params![token],
+                    |r| Ok(AuthUser { id: r.get(0)?, username: r.get(1)? }),
+                )
+                .optional()?;
+            if user.is_some() {
+                // Sliding expiry: renew once the session is into its last day.
+                c.execute(
+                    "UPDATE sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?1) \
+                     WHERE token = ?2 AND (expires_at IS NULL OR expires_at < strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?3))",
+                    params![format!("+{days} days"), token, format!("+{} days", days - 1)],
+                )?;
+            } else {
+                c.execute("DELETE FROM sessions WHERE token = ?1", params![token])?;
+            }
+            Ok(user)
         })?;
         user.ok_or_else(|| ApiError::unauthorized("session expired"))
     }
@@ -66,7 +86,8 @@ fn new_token() -> String {
 }
 
 fn session_cookie(token: &str) -> HeaderValue {
-    HeaderValue::from_str(&format!("{COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/")).expect("cookie")
+    let max_age = session_days() * 24 * 60 * 60;
+    HeaderValue::from_str(&format!("{COOKIE}={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={max_age}")).expect("cookie")
 }
 
 fn clear_cookie() -> HeaderValue {
@@ -75,7 +96,15 @@ fn clear_cookie() -> HeaderValue {
 
 fn start_session(state: &AppState, user_id: i64) -> ApiResult<String> {
     let token = new_token();
-    state.db.with(|c| c.execute("INSERT INTO sessions (token, user_id) VALUES (?1, ?2)", params![token, user_id]))?;
+    let days = format!("+{} days", session_days());
+    state.db.with(|c| {
+        // Housekeeping: drop sessions that have expired.
+        c.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at <= strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [])?;
+        c.execute(
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?3))",
+            params![token, user_id, days],
+        )
+    })?;
     Ok(token)
 }
 

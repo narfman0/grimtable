@@ -393,6 +393,34 @@ async function handle(req, res) {
     const problems = startGame(g, user.id);
     return send(res, 200, { ...gamePublic(g, user.id), problems });
   }
+  if (route('POST', 'games', '*', 'leave')) {
+    const seat = g.seats.findIndex((s) => s.user_id === user.id);
+    if (seat < 0) throw new HttpError(403, 'you are not seated in this game');
+    if (g.status === 'waiting') {
+      if (seat === 0) {
+        g.status = 'cancelled';
+        g.seats = [];
+      } else {
+        g.seats.splice(seat, 1);
+      }
+      for (const sock of g.sockets) {
+        if (sock.readyState === sock.OPEN) sock.send(JSON.stringify({ type: 'lobby', game: gamePublic(g, sock.userId) }));
+      }
+      return send(res, 200, gamePublic(g, user.id));
+    }
+    if (g.status === 'playing') {
+      const st = JSON.parse(g.game.state());
+      st.phase = 'Ended';
+      st.winner = 1 - seat;
+      st.log.push({ round: st.round, phase: st.phase, player: seat, text: `${user.username} conceded` });
+      g.game = w.Game.restore(JSON.stringify(st));
+      g.status = 'finished';
+      g.winner = 1 - seat;
+      broadcast(g, (s) => stateMessage(g, s));
+      return send(res, 200, gamePublic(g, user.id));
+    }
+    throw new HttpError(409, `the game is ${g.status}`);
+  }
   throw new HttpError(404, 'not found');
 }
 

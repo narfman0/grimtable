@@ -321,3 +321,82 @@ async fn open_lobby_broadcasts_and_refuses_an_illegal_army() {
     let (_, shown) = alice.get(&format!("/api/games/{game_id}")).await;
     assert_eq!(shown["status"], "waiting");
 }
+
+#[tokio::test]
+async fn leaving_frees_a_seat_cancels_a_lobby_and_concedes_a_game() {
+    let server = TestServer::start("leave").await;
+    let mut alice = server.client();
+    let mut bob = server.client();
+    alice.register("alice").await;
+    bob.register("bob").await;
+    let (_, cat) = alice.get("/api/catalogue/adeptus-mechanicus").await;
+    let cat: Catalogue = serde_json::from_value(cat).unwrap();
+    let def = editor_army(&cat);
+    let (_, army_a) = alice.post("/api/armies", json!({ "name": "A", "def": def })).await;
+    let (_, army_b) = bob.post("/api/armies", json!({ "name": "B", "def": def })).await;
+
+    // Joiner leaves: the seat frees up and the lobby is open again.
+    let (_, game) = alice.post("/api/games", json!({ "visibility": "open", "pattern": "dawn-of-war", "points_limit": 2000, "army_id": army_a["id"] })).await;
+    let game_id = game["id"].as_i64().unwrap();
+    let mut ws_a = server.ws(&alice, game_id).await;
+    assert_eq!(recv(&mut ws_a).await["type"], "lobby");
+    bob.post(&format!("/api/games/{game_id}/join"), json!({ "army_id": army_b["id"] })).await;
+    assert_eq!(recv(&mut ws_a).await["game"]["seats"].as_array().unwrap().len(), 2);
+    let (status, left) = bob.post(&format!("/api/games/{game_id}/leave"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{left}");
+    assert_eq!(left["seats"].as_array().unwrap().len(), 1);
+    assert_eq!(left["my_seat"], Value::Null);
+    let lobby = recv(&mut ws_a).await;
+    assert_eq!(lobby["game"]["seats"].as_array().unwrap().len(), 1);
+    assert!(bob.get("/api/games/open").await.1.as_array().unwrap().iter().any(|g| g["id"] == game_id), "open again");
+    let (status, _) = bob.post(&format!("/api/games/{game_id}/leave"), json!({})).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "not seated");
+
+    // Host leaves a waiting lobby: cancelled, gone from the open list.
+    let (status, cancelled) = alice.post(&format!("/api/games/{game_id}/leave"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{cancelled}");
+    assert_eq!(cancelled["status"], "cancelled");
+    assert!(bob.get("/api/games/open").await.1.as_array().unwrap().iter().all(|g| g["id"] != game_id));
+
+    // A running game: leaving concedes and the opponent wins.
+    let (_, game) = alice.post("/api/games", json!({ "visibility": "open", "pattern": "dawn-of-war", "points_limit": 2000, "army_id": army_a["id"] })).await;
+    let game_id = game["id"].as_i64().unwrap();
+    bob.post(&format!("/api/games/{game_id}/join"), json!({ "army_id": army_b["id"] })).await;
+    let (status, started) = alice.post(&format!("/api/games/{game_id}/start"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{started}");
+    let mut ws_b = server.ws(&bob, game_id).await;
+    assert_eq!(recv(&mut ws_b).await["type"], "state");
+    let (status, _) = alice.post(&format!("/api/games/{game_id}/leave"), json!({})).await;
+    assert_eq!(status, StatusCode::OK);
+    let frame = recv(&mut ws_b).await;
+    assert_eq!(frame["type"], "state");
+    assert_eq!(frame["state"]["phase"], "Ended");
+    let (_, shown) = bob.get(&format!("/api/games/{game_id}")).await;
+    assert_eq!((shown["status"].as_str(), shown["winner"].as_i64()), (Some("finished"), Some(1)));
+    assert!(frame["state"]["log"].as_array().unwrap().iter().any(|e| e["text"].as_str().unwrap().contains("conceded")));
+    let (status, _) = alice.post(&format!("/api/games/{game_id}/leave"), json!({})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "already finished");
+}
+
+#[tokio::test]
+async fn sessions_expire() {
+    let server = TestServer::start("expiry").await;
+    let mut alice = server.client();
+    alice.register("alice").await;
+    let (status, _) = alice.get("/api/me").await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = alice.cookie.clone().unwrap();
+    let token = cookie.split(';').next().unwrap().trim().trim_start_matches("grimtable_session=").to_string();
+    {
+        let conn = rusqlite::Connection::open(&server.db_path).unwrap();
+        let expires: Option<String> = conn.query_row("SELECT expires_at FROM sessions WHERE token = ?1", [&token], |r| r.get(0)).unwrap();
+        assert!(expires.is_some(), "new sessions carry an expiry");
+        conn.execute("UPDATE sessions SET expires_at = '2000-01-01T00:00:00Z' WHERE token = ?1", [&token]).unwrap();
+    }
+    let (status, body) = alice.get("/api/me").await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+    assert_eq!(body["error"], "session expired");
+    let conn = rusqlite::Connection::open(&server.db_path).unwrap();
+    let left: i64 = conn.query_row("SELECT count(*) FROM sessions WHERE token = ?1", [&token], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0, "expired sessions are deleted on use");
+}

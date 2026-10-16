@@ -20,6 +20,11 @@ export function renderGame(app: App, gameId: string): { el: HTMLElement; teardow
     onMessage(msg: ServerMessage) {
       if (msg.type === 'lobby') {
         record = msg.game;
+        if (record.status === 'cancelled') {
+          toast('the host closed this lobby', 'info');
+          app.navigate('#/');
+          return;
+        }
         if (!session) renderLobby();
         return;
       }
@@ -72,7 +77,23 @@ export function renderGame(app: App, gameId: string): { el: HTMLElement; teardow
         'div',
         { class: 'row', style: 'justify-content:space-between' },
         h('h1', null, 'Lobby'),
-        h('div', { class: 'row' }, h('span', { class: `badge ${status === 'open' ? 'ok' : 'warn'}` }, status), button('Leave', () => app.leaveGame(dummySession()), { class: 'small' })),
+        h('div', { class: 'row' }, h('span', { class: `badge ${status === 'open' ? 'ok' : 'warn'}` }, status), button(
+            'Leave',
+            () => {
+              void (async () => {
+                if (g.my_seat !== null) {
+                  if (host && !confirm('Leaving as host closes this lobby for everyone. Continue?')) return;
+                  try {
+                    await api.leaveGame(g.id);
+                  } catch (e) {
+                    toast(errorText(e));
+                  }
+                }
+                app.leaveGame(dummySession());
+              })();
+            },
+            { class: 'small' },
+          )),
       ),
       h(
         'div',

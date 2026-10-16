@@ -1,12 +1,13 @@
 // The battle screen: canvas board on the left, phase-driven panel on the
 // right. Every action the engine supports is reachable from here.
 
+import { api, errorText } from './api';
 import { Board, onBoard } from './board';
 import { unitBuffs, visibleEnemies } from './engine';
 import { aliveModels, baseRadius, dist, fmt, placedModels, unitDistance } from './geom';
 import type { App } from './main';
 import { Placement, type PlacementKind } from './placement';
-import type { Session } from './session';
+import type { OnlineSession, Session } from './session';
 import { clearSave } from './storage';
 import type { Buffs, DiceExpr, EnumValue, MoveKind, Phase, Unit, Vec2 } from './types';
 import { PLAYER_COLOURS, button, h, select, toast } from './ui';
@@ -334,9 +335,14 @@ export function renderBattle(app: App, session: Session): HTMLElement {
           { class: 'row' },
           button('Fit', () => board.fit(), { class: 'small', title: 'Fit the board to the window' }),
           button(
-            online ? 'Leave' : 'New game',
+            online ? (st.phase === 'Ended' || session.seat === null ? 'Leave' : 'Concede') : 'New game',
             () => {
               if (online) {
+                if (st.phase !== 'Ended' && session.seat !== null) {
+                  if (!confirm('Concede this battle? Your opponent wins.')) return;
+                  void api.leaveGame((session as OnlineSession).gameId).catch((e) => toast(errorText(e)));
+                  return;
+                }
                 app.leaveGame(session);
                 return;
               }

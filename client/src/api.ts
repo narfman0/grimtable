@@ -71,6 +71,8 @@ export const api = {
   joinByCode: (join_code: string, army_id: Id) => request<GameRecord>('POST', '/api/games/join', { join_code, army_id }),
   joinOpen: (id: Id, army_id: Id) => request<GameRecord>('POST', `/api/games/${enc(id)}/join`, { army_id }),
   startGame: (id: Id) => request<GameRecord | void>('POST', `/api/games/${enc(id)}/start`),
+  /** Leave: frees the seat in a lobby, cancels it as host, concedes a running game. */
+  leaveGame: (id: Id) => request<GameRecord>('POST', `/api/games/${enc(id)}/leave`),
 };
 
 /** Per-seat problems a start response or refusal carries, flattened with seat labels. */

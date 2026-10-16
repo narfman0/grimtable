@@ -56,7 +56,8 @@
 - [x] Editor army definition, validation and pack building — `crates/content/src/army_def.rs`, test `an_editor_army_validates_and_plays`
 - [x] Server: accounts, armies, lobbies with join codes, WebSocket games — `crates/server`, tests in `crates/server/tests/multiplayer.rs`
 - [x] Client: login, armies and editor, lobby, networked battle — `client/src/{login,home,editor,game,api,session}.ts`; `npm run e2e` passes against the real server
-- [ ] Leave-lobby endpoint, session expiry, reconnection UX, spectator list
+- [x] Leave-lobby endpoint (free seat, cancel, concede) and session expiry with sliding renewal — tests `leaving_frees_a_seat_cancels_a_lobby_and_concedes_a_game`, `sessions_expire`
+- [ ] Reconnection UX, spectator list
 
 ## Deferred
 

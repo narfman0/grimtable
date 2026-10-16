@@ -5,6 +5,7 @@
 // local `Game` is a mirror restored from every state message).
 
 import type { GameConnection } from './api';
+import type { Id } from './types';
 import { Game, readState, tryApply } from './engine';
 import { saveGame } from './storage';
 import type { GameState, ServerMessage } from './types';
@@ -99,11 +100,15 @@ export class OnlineSession implements Session {
   private pending: ((ok: boolean) => void) | null = null;
   private pendingTimer: number | undefined;
 
+  /** The server's game id, for REST calls such as conceding. */
+  readonly gameId: Id;
+
   constructor(
     private readonly conn: GameConnection,
     first: StateMessage,
     readonly opponentName: string | null,
   ) {
+    this.gameId = conn.gameId;
     this.seat = first.seat;
     this.json = JSON.stringify(first.state);
     this.state = first.state;

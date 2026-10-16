@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
     token      TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    expires_at TEXT
 );
 CREATE TABLE IF NOT EXISTS armies (
     id         INTEGER PRIMARY KEY,
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS games (
     id           INTEGER PRIMARY KEY,
     join_code    TEXT NOT NULL UNIQUE,
     visibility   TEXT NOT NULL CHECK (visibility IN ('open', 'closed')),
-    status       TEXT NOT NULL CHECK (status IN ('waiting', 'playing', 'finished')),
+    status       TEXT NOT NULL CHECK (status IN ('waiting', 'playing', 'finished', 'cancelled')),
     pattern      TEXT NOT NULL,
     points_limit INTEGER NOT NULL,
     host_id      INTEGER NOT NULL REFERENCES users(id),
@@ -68,6 +69,20 @@ impl Db {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")?;
         conn.execute_batch(SCHEMA)?;
+        // Databases created before session expiry existed lack the column.
+        let has_expiry: bool = conn.prepare("PRAGMA table_info(sessions)")?.query_map([], |r| r.get::<_, String>(1))?.filter_map(Result::ok).any(|c| c == "expires_at");
+        if !has_expiry {
+            conn.execute_batch("ALTER TABLE sessions ADD COLUMN expires_at TEXT;")?;
+        }
+        // Databases created before lobbies could be cancelled have a narrower
+        // status check; SQLite cannot alter a constraint, so rebuild the table.
+        let games_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'games'", [], |r| r.get(0))?;
+        if !games_sql.contains("'cancelled'") {
+            let create = SCHEMA.split("CREATE TABLE IF NOT EXISTS games (").nth(1).and_then(|rest| rest.split(");").next()).map(|body| format!("CREATE TABLE games_new ({body});")).expect("games schema");
+            conn.execute_batch(&format!(
+                "PRAGMA foreign_keys = OFF; BEGIN; {create} INSERT INTO games_new SELECT * FROM games; DROP TABLE games; ALTER TABLE games_new RENAME TO games; COMMIT; PRAGMA foreign_keys = ON;"
+            ))?;
+        }
         Ok(Db(Mutex::new(conn)))
     }
 

@@ -390,7 +390,7 @@ export interface FactionSummary {
 }
 
 export type Visibility = 'open' | 'closed';
-export type GameStatus = 'waiting' | 'playing' | 'finished';
+export type GameStatus = 'waiting' | 'playing' | 'finished' | 'cancelled';
 
 export interface GameSeat {
   seat: number;

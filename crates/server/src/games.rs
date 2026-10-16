@@ -320,6 +320,66 @@ pub async fn join_by_id(State(state): State<AppState>, user: AuthUser, Path(id):
 
 /// Problems that stop a lobby from starting: over the points limit, or no
 /// detachment. Everything else is reported and left to the players.
+/// Leave a game. Waiting: the joiner frees seat 1; the host cancels the
+/// game. Playing: the leaver concedes and the opponent wins.
+pub async fn leave(State(state): State<AppState>, user: AuthUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    let game = load_or_404(&state, id)?;
+    let Some(seat) = seat_of(&state, id, user.id)? else {
+        return Err(ApiError::forbidden("you are not seated in this game"));
+    };
+    match game.status.as_str() {
+        "waiting" => {
+            let cancelled = seat == 0;
+            state.db.with(|c| {
+                if cancelled {
+                    c.execute("UPDATE games SET status = 'cancelled', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1", params![id])?;
+                    c.execute("DELETE FROM game_players WHERE game_id = ?1", params![id])?;
+                } else {
+                    c.execute("DELETE FROM game_players WHERE game_id = ?1 AND seat = ?2", params![id, seat as i64])?;
+                    c.execute("UPDATE games SET updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?1", params![id])?;
+                }
+                Ok(())
+            })?;
+            tracing::info!(game = id, user = %user.username, cancelled, "left the lobby");
+            let _ = state.rooms.get(id).tx.send(Event::Lobby);
+            view(&state, id, Some(user.id)).map(Json)
+        }
+        "playing" => {
+            let room = state.rooms.get(id);
+            concede(&state, &room, id, seat, &user.username).await?;
+            view(&state, id, Some(user.id)).map(Json)
+        }
+        other => Err(ApiError::conflict(&format!("the game is {other}"))),
+    }
+}
+
+/// End a running game in the opponent's favour and tell every socket.
+async fn concede(state: &AppState, room: &Room, game_id: i64, seat: usize, username: &str) -> ApiResult<()> {
+    let mut cached = room.state.lock().await;
+    if cached.is_none() {
+        let game = load_or_404(state, game_id)?;
+        let text = game.state_json.ok_or_else(|| ApiError::conflict("the game has not started"))?;
+        *cached = Some(serde_json::from_str(&text).map_err(|e| ApiError::internal(format!("stored game state: {e}")))?);
+    }
+    let gs = cached.as_mut().expect("loaded");
+    let winner = 1 - seat;
+    gs.phase = Phase::Ended;
+    gs.winner = Some(Some(winner));
+    let winner_name = gs.players[winner].name.clone();
+    gs.log(Some(seat), format!("{username} conceded: {winner_name} wins"));
+    let text = serde_json::to_string(&*gs)?;
+    state.db.with(|c| {
+        c.execute(
+            "UPDATE games SET state_json = ?1, status = 'finished', winner = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?3",
+            params![text, winner as i64, game_id],
+        )
+    })?;
+    tracing::info!(game = game_id, user = %username, winner, "conceded");
+    let frame = Arc::new(StateFrame { to_act: to_act(gs), json: text });
+    let _ = room.tx.send(Event::State(frame));
+    Ok(())
+}
+
 fn blocks_start(problem: &str) -> bool {
     (problem.contains("over the") && problem.contains("limit")) || problem == "no detachment selected"
 }

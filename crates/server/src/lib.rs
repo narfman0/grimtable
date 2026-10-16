@@ -77,6 +77,7 @@ pub fn router(state: AppState) -> Router {
         .route("/games/{id}", get(games::get_one))
         .route("/games/{id}/join", post(games::join_by_id))
         .route("/games/{id}/start", post(games::start))
+        .route("/games/{id}/leave", post(games::leave))
         .route("/games/{id}/ws", get(games::ws))
         .fallback(|| async { error::ApiError::not_found("no such endpoint") });
 

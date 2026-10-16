@@ -6,6 +6,10 @@ Shared by the server, the client and the content crate. Change it here first.
 
 - Username and password. Passwords hashed with argon2. A random session
   token in an `HttpOnly` cookie `grimtable_session`, stored server-side.
+- Sessions expire after 30 days without use (`GRIMTABLE_SESSION_DAYS`
+  overrides). Any request in the last day of a session's life renews it;
+  an expired session answers 401 `{"error":"session expired"}` and is
+  deleted. The cookie carries a matching `Max-Age`.
 - `POST /api/register {username, password}` → 201 `{id, username}`; 409 taken.
 - `POST /api/login {username, password}` → 200 `{id, username}`; 401.
 - `POST /api/logout` → 204. `GET /api/me` → `{id, username}` or 401.
@@ -36,6 +40,7 @@ start with an army over the points limit or without a detachment.
 - `POST /api/games/join {join_code, army_id}` → 200 game; takes seat 1. Also `POST /api/games/:id/join {army_id}` for open games.
 - `GET /api/games/:id` → `{id, join_code, visibility, status: "waiting"|"playing"|"finished", pattern, points_limit, seats: [{seat, username, army_name, army_points}], my_seat, winner}`.
 - `POST /api/games/:id/start` (host, both seats filled) → builds both packs, seeds from OS randomness, `GameState::new`, status `playing`.
+- `POST /api/games/:id/leave` → 200 game view. In a waiting lobby the joiner frees seat 1 and the lobby is open again; the host cancels the game (status `cancelled`). In a playing game the leaver concedes: status `finished`, the opponent is the winner, the engine state is ended with a log line, and every socket receives the final `state`. 403 when not seated, 409 when already finished or cancelled.
 - `GET /api/games/mine` → games the user is in.
 - `GET /api/games/:id/ws` → WebSocket, cookie-authenticated.
 

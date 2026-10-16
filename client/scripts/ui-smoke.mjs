@@ -216,11 +216,15 @@ await until('the battle screen', () => q('.battle') && text().includes('Deployme
 assert.ok(text().includes('connected'), 'connection status shown');
 assert.ok(text().includes(`ui-b-${suffix}`) || text().includes('opponent'), 'opponent shown');
 console.log(`battle: ${q('.panel .toact').textContent}`);
-// Leave through the header button: back home, socket closed.
+// Concede through the header button (confirm stubbed), then Leave: back
+// home with the game listed as finished.
+window.confirm = () => true;
+click(buttonNamed('Concede'));
+await until('the battle ended', () => text().includes('Final result'));
 click(buttonNamed('Leave'));
 await until('home after leaving', () => q('.home'));
-await until('the game listed', () => text().includes('Resume'));
-console.log('home: game listed for resume');
+await until('the game listed as finished', () => text().includes('finished'));
+console.log('home: game listed as finished after conceding');
 
 // Hotseat still works: fixtures for both seats, start, muster, battle.
 click(buttonNamed('Local hotseat'));

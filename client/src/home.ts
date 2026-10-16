@@ -3,7 +3,7 @@
 import { api, errorText } from './api';
 import type { App } from './main';
 import { MISSIONS } from './setup';
-import type { ArmyPack, ArmySummary, FactionSummary, GameRecord, Id, OpenGame, Visibility } from './types';
+import type { ArmyPack, ArmySummary, FactionSummary, GameRecord, GameStatus, Id, OpenGame, Visibility } from './types';
 import { button, clear, h, select, toast } from './ui';
 
 export const DEFAULT_POINTS_LIMIT = 2000;
@@ -15,6 +15,7 @@ export function patternLabel(id: string): string {
 export function statusLabel(g: GameRecord): string {
   if (g.status === 'finished') return g.winner === null ? 'finished · draw' : g.winner === g.my_seat ? 'finished · you won' : 'finished · you lost';
   if (g.status === 'playing') return 'playing';
+  if (g.status === 'cancelled') return 'cancelled';
   return g.seats.length < 2 ? 'waiting for an opponent' : 'ready to start';
 }
 
@@ -195,7 +196,7 @@ export function renderHome(app: App): HTMLElement {
       gamesBox.replaceChildren(h('p', { class: 'muted' }, 'No games yet. Create one or join a lobby.'));
       return;
     }
-    const order = { playing: 0, waiting: 1, finished: 2 };
+    const order: Record<GameStatus, number> = { playing: 0, waiting: 1, finished: 2, cancelled: 4 };
     games.sort((a, b) => order[a.status] - order[b.status]);
     gamesBox.replaceChildren(
       h(
