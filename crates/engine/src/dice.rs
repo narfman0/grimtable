@@ -29,8 +29,32 @@ pub trait Dice {
 /// a replaying client stay in lockstep.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rng {
+    /// Serialised as a decimal string: JavaScript numbers cannot hold a u64.
+    #[serde(with = "u64_string")]
     state: u64,
+    #[serde(with = "u64_string")]
     pub draws: u64,
+}
+
+mod u64_string {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u64, s: S) -> Result<S::Ok, S::Error> {
+        v.to_string().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Number(u64),
+        }
+        match Either::deserialize(d)? {
+            Either::Text(t) => t.parse().map_err(serde::de::Error::custom),
+            Either::Number(n) => Ok(n),
+        }
+    }
 }
 
 impl Rng {
@@ -217,6 +241,16 @@ mod tests {
         for s in ["D6", "2D6+1", "D3", "D3+2", "3", "2D6-1"] {
             assert_eq!(DiceExpr::parse(s).unwrap().to_string(), s);
         }
+    }
+
+    #[test]
+    fn rng_round_trips_through_json_as_strings() {
+        let mut r = Rng::new(u64::MAX - 7);
+        r.d6();
+        let json = serde_json::to_string(&r).unwrap();
+        assert!(json.contains('"'), "{json}");
+        let back: Rng = serde_json::from_str(&json).unwrap();
+        assert_eq!(r, back);
     }
 
     #[test]
