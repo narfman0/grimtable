@@ -198,6 +198,10 @@ pub fn keyword_text(k: &Value) -> String {
 /// Build the catalogue for one 40kdc faction slug. `bsdata` overlays points
 /// when given: unit bsdata id → base cost, detachment name → detachment points.
 pub fn build(root: &Path, faction: &str, bsdata: Option<&BsPoints>) -> Result<Catalogue> {
+    anyhow::ensure!(
+        !faction.contains('/') && !faction.contains("..") && root.join("data/40kdc-data/data/core").join(faction).join("units.json").exists(),
+        "no faction data for {faction}"
+    );
     let factions = read(root, faction, "factions.json")?;
     let fac = factions.first().cloned().unwrap_or(Value::Null);
     let compositions = read(root, faction, "unit-compositions.json")?;
