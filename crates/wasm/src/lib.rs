@@ -114,3 +114,11 @@ pub fn build_mission(patterns_json: &str, pattern_id: &str) -> Result<String, Js
     let m = content::mission::mission_from_patterns(patterns_json, pattern_id).map_err(|e| JsError::new(&e.to_string()))?;
     Ok(serde_json::to_string(&m).unwrap())
 }
+
+/// Army-construction problems for a pack JSON at a points limit, as a JSON
+/// array of strings. Empty means legal as far as the data can tell.
+#[wasm_bindgen]
+pub fn validate_pack(pack_json: &str, points_limit: u32) -> Result<String, JsError> {
+    let pack: ArmyPack = serde_json::from_str(pack_json).map_err(|e| JsError::new(&format!("pack: {e}")))?;
+    Ok(serde_json::to_string(&content::pack::validate(&pack, points_limit)).unwrap())
+}

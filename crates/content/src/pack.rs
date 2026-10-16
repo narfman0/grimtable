@@ -136,3 +136,44 @@ mod tests {
         assert_eq!(profile_group("Galvanic rifle"), None);
     }
 }
+
+/// Army-construction checks a pack must pass for a standard battle. Returns
+/// human-readable problems; empty means legal as far as the data can tell.
+pub fn validate(pack: &ArmyPack, points_limit: u32) -> Vec<String> {
+    let mut problems = Vec::new();
+    if pack.points > points_limit {
+        problems.push(format!("{} pts is over the {points_limit} pt limit by {}", pack.points, pack.points - points_limit));
+    }
+    if pack.detachment.is_none() {
+        problems.push("no detachment selected".into());
+    }
+    if pack.units.is_empty() {
+        problems.push("no units".into());
+    }
+    let characters = pack.units.iter().filter(|u| u.keywords.iter().any(|k| k.eq_ignore_ascii_case("Character"))).count();
+    if characters == 0 {
+        problems.push("no Character to be the Warlord".into());
+    }
+    let mut epic: Vec<&str> = Vec::new();
+    for u in &pack.units {
+        if u.keywords.iter().any(|k| k.eq_ignore_ascii_case("Epic Hero")) {
+            if epic.contains(&u.name.as_str()) {
+                problems.push(format!("{} is an Epic Hero and appears more than once", u.name));
+            }
+            epic.push(&u.name);
+        }
+    }
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for u in &pack.units {
+        *counts.entry(u.name.as_str()).or_default() += 1;
+    }
+    for (name, n) in counts {
+        let battleline = pack.units.iter().find(|u| u.name == name).map(|u| u.keywords.iter().any(|k| k.eq_ignore_ascii_case("Battleline"))).unwrap_or(false);
+        let transport = pack.units.iter().find(|u| u.name == name).map(|u| u.keywords.iter().any(|k| k.eq_ignore_ascii_case("Dedicated Transport"))).unwrap_or(false);
+        let limit = if battleline || transport { 6 } else { 3 };
+        if n > limit {
+            problems.push(format!("{name} appears {n} times; the limit is {limit}"));
+        }
+    }
+    problems
+}

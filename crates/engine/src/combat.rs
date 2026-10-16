@@ -33,7 +33,9 @@ fn abstract_target(state: &GameState, target: UnitId, target_buffs: &Buffs) -> T
     let t = &state.units[target];
     let bodyguards: Vec<_> = t.alive_models().filter(|m| !m.is_leader).collect();
     let pool: Vec<_> = if bodyguards.is_empty() { t.alive_models().collect() } else { bodyguards };
-    let first = pool[0];
+    let Some(&first) = pool.first() else {
+        return Target { toughness: 1, save: 7, invuln: None, feel_no_pain: None, wounds_per_model: 1, models: 0, damaged_model_wounds: None, keywords: vec![], in_cover: false };
+    };
     let stats = first.stats_override.as_ref().unwrap_or(&t.spec.stats);
     let damaged = pool.iter().find(|m| m.wounds < m.max_wounds).map(|m| m.wounds);
     let invuln = match (stats.invuln, target_buffs.invuln) {
@@ -592,9 +594,10 @@ pub fn fight(state: &mut GameState, player: PlayerId, unit: UnitId, target: Unit
         }
         apply_casualties(state, target, from, total.models_destroyed, abstract_t.damaged_model_wounds);
         // Re-derive the pool so the next weapon group allocates correctly.
-        let destroyed_so_far = abstract_t.models;
         abstract_t = abstract_target(state, target, &t_buffs);
-        abstract_t.models = abstract_t.models.min(destroyed_so_far.max(abstract_t.models));
+        if abstract_t.models == 0 {
+            break;
+        }
     }
     check_destroyed(state, target);
 

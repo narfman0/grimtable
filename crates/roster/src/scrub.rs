@@ -2,7 +2,7 @@
 //!
 //! The output is the input byte-for-byte except that:
 //! - every `<description>` is emptied;
-//! - every `Description` characteristic is emptied, except the `Leader`
+//! - every `Description` characteristic is emptied, except the `Leader` and `Support`
 //!   ability's, which keeps only the comma-separated unit list;
 //! - a `Transport` profile's `Capacity` keeps only the number.
 //!
@@ -24,7 +24,7 @@ pub fn scrub(xml: &str) -> Result<String, RosterError> {
             "characteristic" => match (node.attribute("name"), profile_of(node)) {
                 (Some("Description"), Some(p)) => {
                     if p.attribute("typeName") == Some("Abilities")
-                        && p.attribute("name") == Some("Leader")
+                        && matches!(p.attribute("name"), Some("Leader") | Some("Support"))
                     {
                         parse_leader_list(node.text().unwrap_or("")).join(", ")
                     } else {

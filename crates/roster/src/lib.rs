@@ -385,7 +385,7 @@ fn collect(node: Node, acc: &mut Collected, unit: &str) -> Result<(), RosterErro
         match p.attribute("typeName") {
             Some("Abilities") => {
                 let name = attr(p, "name");
-                if name == "Leader" {
+                if name == "Leader" || name == "Support" {
                     if let Some(desc) = characteristic(p, "Description") {
                         acc.can_lead = parse_leader_list(desc);
                     }
@@ -544,9 +544,9 @@ fn parse_weapon(p: Node, unit: &str) -> Result<WeaponProfile, RosterError> {
 /// phrase is absent (which is what the scrubber leaves behind).
 pub fn parse_leader_list(desc: &str) -> Vec<String> {
     let text = normalize(desc);
-    let marker = "following units:";
-    let list = match text.to_ascii_lowercase().find(marker) {
-        Some(i) => &text[i + marker.len()..],
+    let lower = text.to_ascii_lowercase();
+    let list = match lower.find("following units:").map(|i| i + "following units:".len()).or_else(|| lower.find("following unit:").map(|i| i + "following unit:".len())) {
+        Some(i) => &text[i..],
         None => text.as_str(),
     };
     list.split(',')
