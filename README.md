@@ -12,6 +12,8 @@ players apply them by hand. See [docs/design.md](docs/design.md) for the
 architecture and its simplifications and [docs/roadmap.md](docs/roadmap.md) for
 what is built and what is next.
 
+![Movement phase: the Mechanicus and Necron fixture lists on a Dawn of War board](docs/screenshot-movement.png)
+
 ## Layout
 
 | Path | What |
