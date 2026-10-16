@@ -47,3 +47,20 @@ git submodule update --init
 fly deploy
 curl -sf https://grimtable-dev.fly.dev/health
 ```
+
+## Local dev box (podman)
+
+The same image on one host, with Postgres in a container beside it, as
+systemd user services (quadlets in `~/.config/containers/systemd`:
+`grimtable.network`, `grimtable-pg.container`, `grimtable-dev.container`;
+secrets in `~/.config/grimtable/dev.env`, mode 600). The app listens on
+port 8095 over plain HTTP, so `GRIMTABLE_SECURE_COOKIES` stays unset.
+
+```sh
+podman build -t grimtable-dev:local .
+systemctl --user restart grimtable-dev
+curl -sf localhost:8095/health
+```
+
+The same Postgres runs the server tests:
+`set -a; . ~/.config/grimtable/dev.env; set +a; cargo test -p server`.
